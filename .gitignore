@@ -1,0 +1,25 @@
+# Python              
+__pycache__/ 
+*.py[cod]             
+*.egg-info/ 
+.venv/                
+venv/         
+*.db  
+		  
+# Backend data
+backend/data/         
+backend/card_tracer.db
+models.json
+				    
+# Environment
+backend/.env                                                                                 
+.env                                    
+											 
+# Node                                                                                       
+frontend/node_modules/
+frontend/dist/                                                                               
+						    
+# Editor                                                                                     
+.DS_Store                                               
+*.swp
+
