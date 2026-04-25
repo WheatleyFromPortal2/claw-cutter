@@ -122,11 +122,18 @@ class ModelRouter:
         max_tokens: int,
     ) -> str:
         url = f"{cfg.base_url}/chat/completions"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {cfg.api_key}",
-            **cfg.extra_headers,
-        }
+        if cfg.api_key:	
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {cfg.api_key}",
+                **cfg.extra_headers,
+            }
+        else:
+            headers = {
+                "Content-Type": "application/json",
+                **cfg.extra_headers,
+            }
+           
         payload = {
             "model": cfg.model,
             "max_tokens": max_tokens,
