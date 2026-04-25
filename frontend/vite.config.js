@@ -10,5 +10,6 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
+    allowedHosts: [ "debate.hunterdorrill.xyz" ],
   },
 });
