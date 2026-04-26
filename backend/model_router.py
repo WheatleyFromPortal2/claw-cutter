@@ -1,18 +1,20 @@
 """
-Multi-provider model router with hot-reload and preference-ordered fallback.
+Multi-provider model router with hot-reload, preference-ordered fallback,
+and per-model concurrency limiting.
 
 models.json schema per entry:
-  id            string   — unique identifier used throughout the app
-  name          string   — display name shown in the UI
-  provider      string   — "openai_compat" | "anthropic"
-  base_url      string   — root URL for openai_compat (e.g. http://host/v1)
-  api_key       string   — bearer token / API key (kept only in models.json)
-  model         string   — model name sent in the request body
-  enabled       bool     — if false the model is never tried
-  preference    int      — lower number = tried first; ties resolved by order in file
-  timeout_secs  float    — seconds before giving up and trying the next model
-  max_tokens    int      — default token budget (callers may override per-call)
-  extra_headers object   — additional HTTP headers merged into every request
+  id              string   — unique identifier used throughout the app
+  name            string   — display name shown in the UI
+  provider        string   — "openai_compat" | "anthropic"
+  base_url        string   — root URL for openai_compat (e.g. http://host/v1)
+  api_key         string   — bearer token / API key (kept only in models.json)
+  model           string   — model name sent in the request body
+  enabled         bool     — if false the model is never tried
+  preference      int      — lower number = tried first; ties resolved by order in file
+  timeout_secs    float    — seconds before giving up and trying the next model
+  max_tokens      int      — default token budget (callers may override per-call)
+  max_concurrent  int      — max simultaneous calls to this model (default 1)
+  extra_headers   object   — additional HTTP headers merged into every request
 """
 
 import asyncio
@@ -42,6 +44,7 @@ class ModelConfig:
     preference: int = 99
     timeout_secs: float = 60.0
     max_tokens: int = 2048
+    max_concurrent: int = 1
     extra_headers: dict = field(default_factory=dict)
 
 
@@ -62,6 +65,7 @@ def _parse_models(path: Path) -> list[ModelConfig]:
                 preference=m.get("preference", 99),
                 timeout_secs=float(m.get("timeout_secs", 60)),
                 max_tokens=int(m.get("max_tokens", 2048)),
+                max_concurrent=int(m.get("max_concurrent", 1)),
                 extra_headers=m.get("extra_headers", {}),
             )
         )
@@ -72,13 +76,36 @@ class ModelRouter:
     def __init__(self) -> None:
         self._models: list[ModelConfig] = []
         self._mtime: float = 0.0
+        self._semaphores: dict[str, asyncio.Semaphore] = {}
+        self._semaphore_maxes: dict[str, int] = {}
         self._reload()
+
+    def _update_semaphores(self, configs: list[ModelConfig]) -> None:
+        new_sems: dict[str, asyncio.Semaphore] = {}
+        new_maxes: dict[str, int] = {}
+        for cfg in configs:
+            new_maxes[cfg.id] = cfg.max_concurrent
+            if (
+                cfg.id in self._semaphores
+                and self._semaphore_maxes.get(cfg.id) == cfg.max_concurrent
+            ):
+                new_sems[cfg.id] = self._semaphores[cfg.id]  # reuse — preserves in-flight count
+            else:
+                new_sems[cfg.id] = asyncio.Semaphore(cfg.max_concurrent)
+                if cfg.id in self._semaphores:
+                    logger.info(
+                        "Semaphore for %s recreated (max_concurrent changed to %d)",
+                        cfg.id, cfg.max_concurrent,
+                    )
+        self._semaphores = new_sems
+        self._semaphore_maxes = new_maxes
 
     def _reload(self) -> None:
         try:
             configs = _parse_models(MODELS_FILE)
             self._mtime = MODELS_FILE.stat().st_mtime
             self._models = configs
+            self._update_semaphores(configs)
             enabled = [m for m in configs if m.enabled]
             logger.info(
                 "models.json loaded: %d total, %d enabled", len(configs), len(enabled)
@@ -120,9 +147,9 @@ class ModelRouter:
         system: str,
         user_msg: str,
         max_tokens: int,
-    ) -> str:
+    ) -> tuple[str, dict]:
         url = f"{cfg.base_url}/chat/completions"
-        if cfg.api_key:	
+        if cfg.api_key:
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {cfg.api_key}",
@@ -133,7 +160,7 @@ class ModelRouter:
                 "Content-Type": "application/json",
                 **cfg.extra_headers,
             }
-           
+
         payload = {
             "model": cfg.model,
             "max_tokens": max_tokens,
@@ -146,7 +173,12 @@ class ModelRouter:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            usage = data.get("usage", {})
+            tokens = {
+                "input": usage.get("prompt_tokens", 0),
+                "output": usage.get("completion_tokens", 0),
+            }
+            return data["choices"][0]["message"]["content"], tokens
 
     async def _call_anthropic(
         self,
@@ -154,7 +186,7 @@ class ModelRouter:
         system: str,
         user_msg: str,
         max_tokens: int,
-    ) -> str:
+    ) -> tuple[str, dict]:
         url = "https://api.anthropic.com/v1/messages"
         headers = {
             "Content-Type": "application/json",
@@ -172,7 +204,12 @@ class ModelRouter:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-            return data["content"][0]["text"]
+            usage = data.get("usage", {})
+            tokens = {
+                "input": usage.get("input_tokens", 0),
+                "output": usage.get("output_tokens", 0),
+            }
+            return data["content"][0]["text"], tokens
 
     async def _dispatch(
         self,
@@ -180,7 +217,7 @@ class ModelRouter:
         system: str,
         user_msg: str,
         max_tokens: int,
-    ) -> str:
+    ) -> tuple[str, dict]:
         if cfg.provider == "openai_compat":
             return await self._call_openai_compat(cfg, system, user_msg, max_tokens)
         if cfg.provider == "anthropic":
@@ -194,42 +231,84 @@ class ModelRouter:
         system: str,
         user_msg: str,
         max_tokens: Optional[int] = None,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, dict]:
         """
-        Try active models in preference order.
+        Try active models in preference order, respecting per-model concurrency limits.
 
-        Returns (response_text, model_id_used).
-        Falls back to the next model on timeout or any HTTP/parse error.
-        Raises RuntimeError if every model fails.
+        - If a model is at capacity (all slots occupied) it is skipped in favour of
+          the next model in preference order.
+        - If every model is at capacity the call waits until a slot opens up, then
+          retries from the top of the preference list.
+        - If a model returns an error it is skipped for the lifetime of this call.
+
+        Returns (response_text, model_id_used, tokens_dict).
+        Raises RuntimeError if every model errors out.
         """
         models = self.active_models()
         if not models:
             raise RuntimeError("No models are enabled in models.json")
 
-        last_error: str = "no models tried"
-        for cfg in models:
-            effective_tokens = max_tokens if max_tokens is not None else cfg.max_tokens
-            try:
-                logger.debug("Trying model %s (preference=%d)", cfg.id, cfg.preference)
-                text = await asyncio.wait_for(
-                    self._dispatch(cfg, system, user_msg, effective_tokens),
-                    timeout=cfg.timeout_secs,
-                )
-                return text, cfg.id
-            except asyncio.TimeoutError:
-                last_error = f"{cfg.id}: timed out after {cfg.timeout_secs}s"
-                logger.warning(last_error)
-            except httpx.TimeoutException:
-                last_error = f"{cfg.id}: HTTP timeout"
-                logger.warning(last_error)
-            except httpx.HTTPStatusError as exc:
-                last_error = f"{cfg.id}: HTTP {exc.response.status_code}"
-                logger.warning("%s — response: %s", last_error, exc.response.text[:200])
-            except Exception as exc:
-                last_error = f"{cfg.id}: {exc}"
-                logger.warning("Model %s error: %s", cfg.id, exc)
+        errored: set[str] = set()
+        last_error = "no models tried"
 
-        raise RuntimeError(f"All models failed. Last error: {last_error}")
+        while True:
+            available = [m for m in models if m.id not in errored]
+            if not available:
+                raise RuntimeError(f"All models failed. Last error: {last_error}")
+
+            any_at_capacity = False
+
+            for cfg in available:
+                sem = self._semaphores.get(cfg.id)
+                if sem is None:
+                    errored.add(cfg.id)
+                    continue
+
+                if sem.locked():
+                    any_at_capacity = True
+                    continue  # model busy — fall through to next
+
+                async with sem:
+                    effective = max_tokens if max_tokens is not None else cfg.max_tokens
+                    logger.debug(
+                        "Calling model %s (preference=%d)", cfg.id, cfg.preference
+                    )
+                    try:
+                        text, tokens = await asyncio.wait_for(
+                            self._dispatch(cfg, system, user_msg, effective),
+                            timeout=cfg.timeout_secs,
+                        )
+                        return text, cfg.id, tokens
+                    except asyncio.TimeoutError:
+                        last_error = f"{cfg.id}: timed out after {cfg.timeout_secs}s"
+                        logger.warning(last_error)
+                        errored.add(cfg.id)
+                    except httpx.TimeoutException:
+                        last_error = f"{cfg.id}: HTTP timeout"
+                        logger.warning(last_error)
+                        errored.add(cfg.id)
+                    except httpx.HTTPStatusError as exc:
+                        last_error = f"{cfg.id}: HTTP {exc.response.status_code}"
+                        logger.warning("%s — response: %s", last_error, exc.response.text[:200])
+                        errored.add(cfg.id)
+                    except Exception as exc:
+                        last_error = f"{cfg.id}: {exc}"
+                        logger.warning("Model %s error: %s", cfg.id, exc)
+                        errored.add(cfg.id)
+
+            # Re-check after marking errors this pass
+            available = [m for m in models if m.id not in errored]
+            if not available:
+                raise RuntimeError(f"All models failed. Last error: {last_error}")
+
+            if not any_at_capacity:
+                # All remaining models had semaphores but we still didn't succeed —
+                # shouldn't happen, but raise rather than spin.
+                raise RuntimeError(f"All models failed. Last error: {last_error}")
+
+            # At least one model is occupied — wait then retry from top of list
+            logger.debug("All models at capacity, waiting for a slot…")
+            await asyncio.sleep(0.5)
 
 
 # Module-level singleton — imported by ai.py and main.py

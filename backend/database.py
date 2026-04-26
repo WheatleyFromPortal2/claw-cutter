@@ -1,7 +1,7 @@
-from sqlalchemy import create_engine, Column, String, DateTime, Integer
+from sqlalchemy import create_engine, Column, String, DateTime, Integer, Float
 from sqlalchemy.orm import declarative_base, sessionmaker
 
-DATABASE_URL = "sqlite:///./card_tracer.db"
+DATABASE_URL = "sqlite:///./claw_cutter.db"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -22,6 +22,10 @@ class Job(Base):
     error = Column(String, nullable=True)
     expires_at = Column(DateTime)
     card_log = Column(String, nullable=True)  # JSON array of per-card results
+    tokens_input = Column(Integer, default=0)
+    tokens_output = Column(Integer, default=0)
+    processing_secs = Column(Float, default=0.0)
+    filesize = Column(Integer, default=0)
 
 
 def get_db():

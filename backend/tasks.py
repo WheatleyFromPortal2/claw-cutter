@@ -1,19 +1,21 @@
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 from database import SessionLocal, Job
-from docx_utils import strip_tracing, extract_text_from_xml, apply_tracings, build_output_docx
-from ai import parse_cards, underline_card, highlight_card, UNDERLINE_PROMPT, HIGHLIGHT_PROMPT
+from docx_utils import strip_cutting, extract_text_from_xml, apply_cuttings, build_output_docx
+from ai import parse_cards, underline_card, highlight_card, get_prompts
 
 DATA_DIR = os.getenv("DATA_DIR", "./data")
 logger = logging.getLogger(__name__)
 
 
-async def run_tracing_job(job_id: str) -> None:
+async def run_cutting_job(job_id: str) -> None:
     print(f"[job {job_id[:8]}] background task started", flush=True)
     db = SessionLocal()
+    start_time = time.time()
     try:
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
@@ -27,14 +29,18 @@ async def run_tracing_job(job_id: str) -> None:
         with open(input_path, "rb") as f:
             docx_bytes = f.read()
 
+        job.filesize = len(docx_bytes)
+        db.commit()
+
         settings = json.loads(job.settings)
         hl_color = settings.get("hl_color", "cyan")
         topic = settings.get("topic", "")
         mode = settings.get("mode", "all")
-        underline_prompt = settings.get("underline_prompt") or UNDERLINE_PROMPT
-        highlight_prompt = settings.get("highlight_prompt") or HIGHLIGHT_PROMPT
+        prompts = get_prompts()
+        underline_prompt = settings.get("underline_prompt") or prompts["underline"]
+        highlight_prompt = settings.get("highlight_prompt") or prompts["highlight"]
 
-        stripped_xml = strip_tracing(docx_bytes)
+        stripped_xml = strip_cutting(docx_bytes)
         raw_text = extract_text_from_xml(stripped_xml)
 
         print(f"[job {job_id[:8]}] extracted {len(raw_text)} chars from docx", flush=True)
@@ -50,21 +56,31 @@ async def run_tracing_job(job_id: str) -> None:
         job.card_log = json.dumps([])
         db.commit()
 
-        tracings = []
+        cuttings = []
         card_log = []
+        total_input_tokens = 0
+        total_output_tokens = 0
 
         for card in cards:
-            underline_result, ul_model = await underline_card(card, topic, underline_prompt)
+            underline_result, ul_model, ul_tokens = await underline_card(card, topic, underline_prompt)
+            total_input_tokens += ul_tokens.get("input", 0)
+            total_output_tokens += ul_tokens.get("output", 0)
+
             relevant = underline_result.get("relevant", False)
             underlined = underline_result.get("underlined", [])
 
-            # "all" mode traces regardless of relevance flag; "topic_only" respects it
-            should_trace = bool(underlined) and (mode == "all" or relevant)
+            # "all" mode cuts every card regardless of relevance flag; "topic_only" respects it
+            should_cut = mode == "all" or (bool(underlined) and relevant)
 
-            if should_trace:
-                highlight_result, hl_model = await highlight_card(card, underlined, highlight_prompt)
-                highlighted = highlight_result.get("highlighted", [])
-                tracings.append(
+            if should_cut:
+                if underlined:
+                    highlight_result, hl_model, hl_tokens = await highlight_card(card, underlined, highlight_prompt)
+                    total_input_tokens += hl_tokens.get("input", 0)
+                    total_output_tokens += hl_tokens.get("output", 0)
+                    highlighted = highlight_result.get("highlighted", [])
+                else:
+                    highlighted = []
+                cuttings.append(
                     {
                         "tag": card["tag"],
                         "underlined": underlined,
@@ -82,7 +98,7 @@ async def run_tracing_job(job_id: str) -> None:
                     }
                 )
             else:
-                tracings.append(
+                cuttings.append(
                     {
                         "tag": card["tag"],
                         "underlined": [],
@@ -105,13 +121,16 @@ async def run_tracing_job(job_id: str) -> None:
             job.card_log = json.dumps(card_log)
             db.commit()
 
-        traced_xml = apply_tracings(stripped_xml, tracings, hl_color)
-        output_bytes = build_output_docx(docx_bytes, traced_xml)
+        cut_xml = apply_cuttings(stripped_xml, cuttings, hl_color)
+        output_bytes = build_output_docx(docx_bytes, cut_xml)
 
         output_path = Path(DATA_DIR) / job_id / "output.docx"
         with open(output_path, "wb") as f:
             f.write(output_bytes)
 
+        job.tokens_input = total_input_tokens
+        job.tokens_output = total_output_tokens
+        job.processing_secs = time.time() - start_time
         job.status = "done"
         job.progress = 100
         db.commit()
@@ -122,6 +141,7 @@ async def run_tracing_job(job_id: str) -> None:
             if job:
                 job.status = "error"
                 job.error = str(e)
+                job.processing_secs = time.time() - start_time
                 db.commit()
         except Exception:
             pass

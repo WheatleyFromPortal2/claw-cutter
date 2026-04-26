@@ -4,7 +4,7 @@ import re
 from xml.sax.saxutils import unescape
 
 
-def strip_tracing(docx_bytes: bytes) -> str:
+def strip_cutting(docx_bytes: bytes) -> str:
     with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
         with z.open("word/document.xml") as f:
             xml = f.read().decode("utf-8")
@@ -125,9 +125,9 @@ def rebuild_para(
     return f"{p_open}{p_pr}{new_runs}</w:p>"
 
 
-def apply_tracings(stripped_xml: str, tracings: list, hl_color: str) -> str:
+def apply_cuttings(stripped_xml: str, cuttings: list, hl_color: str) -> str:
     para_pattern = re.compile(r"<w:p[^/][^>]*>[\s\S]*?<\/w:p>")
-    cards_to_match = [t for t in tracings if not t.get("skip")]
+    cards_to_match = [t for t in cuttings if not t.get("skip")]
     prev_was_heading = False
 
     def process_para(m):
@@ -161,9 +161,9 @@ def apply_tracings(stripped_xml: str, tracings: list, hl_color: str) -> str:
         if not para_text.strip():
             return para_str
 
-        for tracing in cards_to_match:
-            underlined = tracing.get("underlined", [])
-            highlighted = tracing.get("highlighted", [])
+        for cutting in cards_to_match:
+            underlined = cutting.get("underlined", [])
+            highlighted = cutting.get("highlighted", [])
             if not underlined:
                 continue
             matched_ul = [ul for ul in underlined if ul in para_text]
@@ -176,13 +176,13 @@ def apply_tracings(stripped_xml: str, tracings: list, hl_color: str) -> str:
     return para_pattern.sub(process_para, stripped_xml)
 
 
-def build_output_docx(original_docx_bytes: bytes, traced_xml: str) -> bytes:
+def build_output_docx(original_docx_bytes: bytes, cut_xml: str) -> bytes:
     output_buffer = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(original_docx_bytes)) as zin:
         with zipfile.ZipFile(output_buffer, "w", zipfile.ZIP_DEFLATED) as zout:
             for item in zin.infolist():
                 if item.filename == "word/document.xml":
-                    zout.writestr(item, traced_xml.encode("utf-8"))
+                    zout.writestr(item, cut_xml.encode("utf-8"))
                 elif item.filename == "word/_rels/settings.xml.rels":
                     data = zin.read(item.filename).decode("utf-8")
                     data = re.sub(

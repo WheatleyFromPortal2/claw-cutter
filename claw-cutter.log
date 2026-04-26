@@ -1,0 +1,114 @@
+[run.sh]   Log → /home/hunterd/code/claw-cutter/claw-cutter.log
+[frontend] 
+[frontend] > card-tracer@1.0.0 dev
+[frontend] > vite
+[frontend] 
+[frontend] 
+[frontend]   VITE v5.4.21  ready in 140 ms
+[frontend] 
+[frontend]   ➜  Local:   http://localhost:5173/
+[frontend]   ➜  Network: use --host to expose
+[frontend]   ➜  press h + enter to show help
+[backend]  INFO:     Will watch for changes in these directories: ['/home/hunterd/code/claw-cutter/backend']
+[backend]  INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+[backend]  INFO:     Started reloader process [7175] using WatchFiles
+[backend]  INFO:     Started server process [7218]
+[backend]  INFO:     Waiting for application startup.
+[backend]  INFO:     Application startup complete.
+[backend]  INFO:     127.0.0.1:40822 - "POST /api/jobs HTTP/1.1" 200 OK
+[backend]  [job ffd68b8b] background task started
+[backend]  [job ffd68b8b] extracted 191823 chars from docx
+[backend]  [job ffd68b8b] text sample:
+[backend]  ***T***
+[backend]  1NC – T
+[backend]  Our interpretation is that the resolution should define the division of affirmative and negative ground.  It was negotiated and announced in advance, providing both sides with a reasonable opportunity to prepare to engage one another’s arguments. 
+[backend]  This does not require the use of any particular style, type of evidence, or assumption about the role of the judge; only that the topic should determine the debate’s subject matter.   
+[backend]  
+[backend]  
+[backend]  NHI is government guarantee of coverage
+[backend]  Thomas BODENHEIMER AND Kevin GRUMBACH 12. *Professor of Family Medicine, UCSF School of Medicine. **Chair, Department of Family Medicine, UCSF School of Medicine. Understanding Health Policy: A Clinical Approach. 7th ed. McGraw Hill. http://accessmedicine.mhmedical.com/content.aspx?bookid=1790&sectionid=1211
+[backend]  [job ffd68b8b] parsed 35 cards
+[backend]  [job ffd68b8b] card 1: tag='For more than 100 years, reformers in the United States argued for the passage o'  body_len=670
+[backend]  [job ffd68b8b] card 2: tag='Debate inevitably involves exclusions—making sure that those are reciprocal outw'  body_len=7315
+[backend]  [job ffd68b8b] card 3: tag='Only we access offense---arguments like T don’t injure people, but policies do--'  body_len=4806
+[backend]  [job ffd68b8b] card 4: tag='They have zero evidence tying that form of violence to debate which is a unique'  body_len=5426
+[backend]  [job ffd68b8b] card 5: tag='Only single-payer can overcome the death gap in health outcomes.'  body_len=2597
+[backend]  INFO:     127.0.0.1:40836 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:40840 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:57278 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:57282 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:57292 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:57294 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:57310 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:40224 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:40236 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:40248 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:40258 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:40260 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:42218 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:42230 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:42240 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:42244 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:42250 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:37336 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:37346 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:37354 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:37370 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:37384 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:51244 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:51254 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:51256 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:51264 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:51266 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:40844 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:40858 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:40868 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:40874 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:40886 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:53554 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:53564 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:53578 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:53592 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:53596 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:35540 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:35552 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:35558 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:35574 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:35578 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:60348 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:60358 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:60366 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:60370 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:60384 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:53162 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:53166 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:53174 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:53180 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:53186 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:56466 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:56476 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:56482 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:56490 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:56506 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:57546 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:57560 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:57566 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:57570 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:57574 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:43334 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:43338 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:43350 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:43356 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:43362 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:48006 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:48012 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:48022 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:48036 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:48050 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:49982 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:49996 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:49998 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:50014 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:50020 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:35546 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7 HTTP/1.1" 200 OK
+[backend]  INFO:     127.0.0.1:35550 - "GET /api/jobs/ffd68b8b-ed39-42e3-9061-ff16aab670e7/download HTTP/1.1" 200 OK

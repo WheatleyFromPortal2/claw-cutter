@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { getJob, downloadJob } from "./api.js";
+import { formatBytes, formatSecs } from "./App.jsx";
 
 const STATUS_LABEL = {
   queued: "Queued",
@@ -43,7 +44,7 @@ export default function JobStatus({ jobId, onBack }) {
   const handleDownload = async () => {
     setDownloading(true);
     try {
-      await downloadJob(jobId);
+      await downloadJob(jobId, job.filename);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -104,15 +105,43 @@ export default function JobStatus({ jobId, onBack }) {
       )}
 
       {job.status === "done" && (
-        <div className="done-section">
-          <button
-            className="btn-primary btn-download"
-            onClick={handleDownload}
-            disabled={downloading}
-          >
-            {downloading ? "Downloading…" : "Download traced.docx"}
-          </button>
-        </div>
+        <>
+          <div className="done-section">
+            <button
+              className="btn-primary btn-download"
+              onClick={handleDownload}
+              disabled={downloading}
+            >
+              {downloading ? "Downloading…" : `Download ${job.filename.replace(/\.docx$/i, "")}_CUT.docx`}
+            </button>
+          </div>
+
+          <div className="job-stats">
+            <div className="job-stats-title">Statistics</div>
+            <div className="job-stats-grid">
+              <div className="stat-item">
+                <span className="stat-value">{(job.tokens_input + job.tokens_output).toLocaleString()}</span>
+                <span className="stat-label">Tokens ({job.tokens_input.toLocaleString()} in / {job.tokens_output.toLocaleString()} out)</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-value">{formatSecs(job.processing_secs)}</span>
+                <span className="stat-label">Processing time</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-value">{job.underlines}</span>
+                <span className="stat-label">Underlines</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-value">{job.highlights}</span>
+                <span className="stat-label">Highlights</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-value">{formatBytes(job.filesize)}</span>
+                <span className="stat-label">File size</span>
+              </div>
+            </div>
+          </div>
+        </>
       )}
 
       {job.card_log && job.card_log.length > 0 && (
@@ -122,7 +151,7 @@ export default function JobStatus({ jobId, onBack }) {
             {job.card_log.map((entry, i) => (
               <div
                 key={i}
-                className={`card-log-entry ${entry.skipped ? "skipped" : "traced"}`}
+                className={`card-log-entry ${entry.skipped ? "skipped" : "cut"}`}
               >
                 <span className="card-log-index">
                   [{i + 1}/{job.cards_total}]

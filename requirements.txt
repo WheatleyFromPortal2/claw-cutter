@@ -5,3 +5,5 @@ python-multipart
 httpx
 python-dotenv
 aiofiles
+anthropic
+rich

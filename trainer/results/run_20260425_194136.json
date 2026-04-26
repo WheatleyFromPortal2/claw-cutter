@@ -1,0 +1,60 @@
+[
+  {
+    "iteration": 1,
+    "scores": [
+      {
+        "label": "current",
+        "composite": 0.7112499480070192,
+        "note": ""
+      },
+      {
+        "label": "variant 1",
+        "composite": 0.7989470775926037,
+        "note": "Hammers exact-substring fidelity with a 'mental Ctrl+F' verification step and adds explicit character-budget math to pull both ratios down into target ranges."
+      },
+      {
+        "label": "variant 2",
+        "composite": 0.7803250773993807,
+        "note": "Restructures as numbered hard-constraint blocks with explicit ratio targets and a 'shorten until verbatim' fallback rule to lift exact-match rates and pull HL ratio under 25%."
+      },
+      {
+        "label": "variant 3",
+        "composite": 0.7324271379017318,
+        "note": "Frames constraints as 'two inviolable rules' with a 'shorten until verbatim' fallback and explicit compression recipe (agent/verb/number/negation) to fix exact-match failures and tighten highlight ratios."
+      }
+    ],
+    "composite": 0.7989470775926037,
+    "is_best": true,
+    "label": "variant 1",
+    "variants_tried": 3
+  },
+  {
+    "iteration": 2,
+    "scores": [
+      {
+        "label": "current",
+        "composite": 0.825,
+        "note": ""
+      },
+      {
+        "label": "variant 1",
+        "composite": 0.7592857142857142,
+        "note": "Adds explicit smart-quote/em-dash preservation warnings with a worked example, and replaces vague length guidance with a 3-step measure-draft-cut procedure to fix the dominant failure modes (44-55% exact match, ratio overruns to 0.98)."
+      },
+      {
+        "label": "variant 2",
+        "composite": 0.7598076923076923,
+        "note": "Restructures both prompts into numbered ABSOLUTE RULES with explicit Unicode codepoint warnings (U+2019) and a budget-stress-test example, directly attacking the two failure modes \u2014 non-verbatim copies (especially around curly quotes) and runaway ratios up to 0.98."
+      },
+      {
+        "label": "variant 3",
+        "composite": 0.823125,
+        "note": "Frames the rules as machine-checkable predicates (`s in body == True`, explicit U+2019 vs U+0027) with \u2713/\u2717 tables and a verify-then-cut procedure, plus a curly-quote example mirroring the actual failed Arctic card to teach the model not to silently normalize Unicode."
+      }
+    ],
+    "composite": 0.825,
+    "is_best": true,
+    "label": "current",
+    "variants_tried": 3
+  }
+]

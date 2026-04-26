@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import JobList from "./JobList.jsx";
 import JobStatus from "./JobStatus.jsx";
-import { submitJob, listModels } from "./api.js";
-import { DEFAULT_UNDERLINE_PROMPT, DEFAULT_HIGHLIGHT_PROMPT } from "./prompts.js";
+import { submitJob, listModels, getStats, getPrompts } from "./api.js";
 
 const HL_COLORS = [
   { value: "yellow", label: "Yellow" },
@@ -11,13 +10,15 @@ const HL_COLORS = [
   { value: "magenta", label: "Pink" },
 ];
 
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+
 function TokenGate({ onSave }) {
   const [val, setVal] = useState("");
   return (
     <div className="token-gate">
       <div className="token-gate-box">
         <h2>Enter API Token</h2>
-        <p>Enter the shared access token to use Card Tracer.</p>
+        <p>Enter the shared access token to use Claw Cutter.</p>
         <input
           type="password"
           placeholder="Bearer token"
@@ -38,6 +39,68 @@ function TokenGate({ onSave }) {
   );
 }
 
+function GlobalStats({ refreshKey }) {
+  const [stats, setStats] = useState(null);
+
+  useEffect(() => {
+    getStats()
+      .then((r) => r.ok && r.json())
+      .then((data) => data && setStats(data))
+      .catch(() => {});
+  }, [refreshKey]);
+
+  if (!stats || stats.jobs_completed === 0) return null;
+
+  return (
+    <div className="global-stats">
+      <div className="global-stats-title">Global Statistics</div>
+      <div className="global-stats-grid">
+        <div className="stat-item">
+          <span className="stat-value">{stats.jobs_completed}</span>
+          <span className="stat-label">Jobs</span>
+        </div>
+        <div className="stat-item">
+          <span className="stat-value">{(stats.tokens_input + stats.tokens_output).toLocaleString()}</span>
+          <span className="stat-label">Tokens</span>
+        </div>
+        <div className="stat-item">
+          <span className="stat-value">{stats.underlines.toLocaleString()}</span>
+          <span className="stat-label">Underlines</span>
+        </div>
+        <div className="stat-item">
+          <span className="stat-value">{stats.highlights.toLocaleString()}</span>
+          <span className="stat-label">Highlights</span>
+        </div>
+        <div className="stat-item">
+          <span className="stat-value">{formatBytes(stats.filesize)}</span>
+          <span className="stat-label">Processed</span>
+        </div>
+        <div className="stat-item">
+          <span className="stat-value">{formatSecs(stats.processing_secs)}</span>
+          <span className="stat-label">CPU Time</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatSecs(secs) {
+  if (!secs) return "0s";
+  if (secs < 60) return `${secs.toFixed(1)}s`;
+  const m = Math.floor(secs / 60);
+  const s = Math.round(secs % 60);
+  return `${m}m ${s}s`;
+}
+
+export { formatBytes, formatSecs };
+
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem("token") || "");
   const [activeJobId, setActiveJobId] = useState(null);
@@ -52,6 +115,19 @@ export default function App() {
       .catch(() => {});
   }, [token]);
 
+  useEffect(() => {
+    getPrompts()
+      .then((r) => r.ok && r.json())
+      .then((data) => {
+        if (data) {
+          setDefaultPrompts(data);
+          setUnderlinePrompt((p) => p || data.underline);
+          setHighlightPrompt((p) => p || data.highlight);
+        }
+      })
+      .catch(() => {});
+  }, [token]);
+
   // Upload / settings state
   const [file, setFile] = useState(null);
   const [dragging, setDragging] = useState(false);
@@ -59,8 +135,9 @@ export default function App() {
   const [mode, setMode] = useState("all");
   const [topic, setTopic] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [underlinePrompt, setUnderlinePrompt] = useState(DEFAULT_UNDERLINE_PROMPT);
-  const [highlightPrompt, setHighlightPrompt] = useState(DEFAULT_HIGHLIGHT_PROMPT);
+  const [underlinePrompt, setUnderlinePrompt] = useState("");
+  const [highlightPrompt, setHighlightPrompt] = useState("");
+  const [defaultPrompts, setDefaultPrompts] = useState({ underline: "", highlight: "" });
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState(null);
 
@@ -72,12 +149,16 @@ export default function App() {
   };
 
   const handleFile = (f) => {
-    if (f && f.name.endsWith(".docx")) {
-      setFile(f);
-      setSubmitError(null);
-    } else {
+    if (!f || !f.name.endsWith(".docx")) {
       setSubmitError("Only .docx files are supported.");
+      return;
     }
+    if (f.size > MAX_FILE_SIZE) {
+      setSubmitError("File exceeds the 10 MB size limit.");
+      return;
+    }
+    setFile(f);
+    setSubmitError(null);
   };
 
   const onDragOver = useCallback((e) => {
@@ -162,7 +243,7 @@ export default function App() {
               <>
                 <div className="dropzone-icon">⬆</div>
                 <div className="dropzone-label">Drop a .docx file here</div>
-                <div className="dropzone-hint">or click to browse</div>
+                <div className="dropzone-hint">or click to browse · max 10 MB</div>
               </>
             )}
           </div>
@@ -214,7 +295,7 @@ export default function App() {
                   className={`toggle-btn ${mode === "all" ? "active" : ""}`}
                   onClick={() => setMode("all")}
                 >
-                  Trace All
+                  Cut All
                 </button>
                 <button
                   className={`toggle-btn ${mode === "topic_only" ? "active" : ""}`}
@@ -252,7 +333,7 @@ export default function App() {
                     <label>Underline Prompt</label>
                     <button
                       className="btn-reset"
-                      onClick={() => setUnderlinePrompt(DEFAULT_UNDERLINE_PROMPT)}
+                      onClick={() => setUnderlinePrompt(defaultPrompts.underline)}
                     >
                       Reset
                     </button>
@@ -269,7 +350,7 @@ export default function App() {
                     <label>Highlight Prompt</label>
                     <button
                       className="btn-reset"
-                      onClick={() => setHighlightPrompt(DEFAULT_HIGHLIGHT_PROMPT)}
+                      onClick={() => setHighlightPrompt(defaultPrompts.highlight)}
                     >
                       Reset
                     </button>
@@ -292,12 +373,13 @@ export default function App() {
             disabled={!file || submitting}
             onClick={handleSubmit}
           >
-            {submitting ? "Submitting…" : "Trace Cards"}
+            {submitting ? "Submitting…" : "Cut Cards"}
           </button>
         </section>
 
         {/* Job list */}
         <section className="list-panel">
+          <GlobalStats refreshKey={refreshKey} />
           <JobList onSelectJob={setActiveJobId} refreshKey={refreshKey} />
         </section>
       </main>
@@ -310,7 +392,7 @@ function Header({ onTokenReset }) {
     <header className="header">
       <div className="header-brand">
         <span className="header-logo">✦</span>
-        Card Tracer
+        Claw Cutter
       </div>
       <button className="btn-token-reset" onClick={onTokenReset} title="Change token">
         Token

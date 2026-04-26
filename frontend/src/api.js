@@ -24,14 +24,13 @@ export const getJob = (id) =>
 export const listJobs = () =>
   fetch(`${BASE}/jobs`, { headers: headers() });
 
-export const downloadJob = async (id) => {
+export const downloadJob = async (id, originalFilename) => {
   const res = await fetch(`${BASE}/jobs/${id}/download`, { headers: headers() });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
-  const disposition = res.headers.get("content-disposition") || "";
-  const match = disposition.match(/filename="?([^"]+)"?/);
-  const filename = match ? match[1] : "traced_output.docx";
+  const stem = originalFilename ? originalFilename.replace(/\.docx$/i, "") : "output";
+  const filename = `${stem}_CUT.docx`;
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
@@ -46,3 +45,9 @@ export const deleteJob = (id) =>
 
 export const listModels = () =>
   fetch(`${BASE}/models`, { headers: headers() });
+
+export const getStats = () =>
+  fetch(`${BASE}/stats`, { headers: headers() });
+
+export const getPrompts = () =>
+  fetch(`${BASE}/prompts`, { headers: headers() });

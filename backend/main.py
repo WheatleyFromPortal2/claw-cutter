@@ -4,7 +4,7 @@ import shutil
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -26,13 +26,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
-from ai import HIGHLIGHT_PROMPT, UNDERLINE_PROMPT
+from ai import get_prompts
 from database import Base, Job, SessionLocal, engine, get_db
 from model_router import router as model_router
-from tasks import run_tracing_job
+from tasks import run_cutting_job
 
 APP_TOKEN = os.getenv("APP_TOKEN", "")
 DATA_DIR = os.getenv("DATA_DIR", "./data")
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 @asynccontextmanager
@@ -62,7 +63,7 @@ async def lifespan(app: FastAPI):
     # Shutdown (nothing to clean up)
 
 
-app = FastAPI(title="Card Tracer", lifespan=lifespan)
+app = FastAPI(title="Claw Cutter", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -70,6 +71,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 
@@ -78,6 +80,11 @@ def verify_token(authorization: Optional[str] = Header(None)) -> None:
         return
     if not authorization or authorization != f"Bearer {APP_TOKEN}":
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@app.get("/api/prompts")
+def get_prompts_endpoint(_: None = Depends(verify_token)):
+    return get_prompts()
 
 
 @app.get("/api/models")
@@ -109,10 +116,15 @@ async def create_job(
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid settings JSON")
 
+    prompts = get_prompts()
     if not settings_dict.get("underline_prompt"):
-        settings_dict["underline_prompt"] = UNDERLINE_PROMPT
+        settings_dict["underline_prompt"] = prompts["underline"]
     if not settings_dict.get("highlight_prompt"):
-        settings_dict["highlight_prompt"] = HIGHLIGHT_PROMPT
+        settings_dict["highlight_prompt"] = prompts["highlight"]
+
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File exceeds the 10 MB size limit.")
 
     job_id = str(uuid.uuid4())
     now = datetime.utcnow()
@@ -120,7 +132,6 @@ async def create_job(
     job_dir = Path(DATA_DIR) / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    content = await file.read()
     with open(job_dir / "input.docx", "wb") as f:
         f.write(content)
 
@@ -140,7 +151,7 @@ async def create_job(
     db.add(job)
     db.commit()
 
-    background_tasks.add_task(run_tracing_job, job_id)
+    background_tasks.add_task(run_cutting_job, job_id)
 
     return {"job_id": job_id, "status": "queued"}
 
@@ -163,6 +174,19 @@ def list_jobs(
     ]
 
 
+def _job_ul_hl_totals(job: Job) -> tuple[int, int]:
+    ul_total = 0
+    hl_total = 0
+    if job.card_log:
+        try:
+            for entry in json.loads(job.card_log):
+                ul_total += entry.get("ul_count", 0)
+                hl_total += entry.get("hl_count", 0)
+        except Exception:
+            pass
+    return ul_total, hl_total
+
+
 @app.get("/api/jobs/{job_id}")
 def get_job(
     job_id: str,
@@ -180,6 +204,8 @@ def get_job(
         except json.JSONDecodeError:
             pass
 
+    ul_total, hl_total = _job_ul_hl_totals(job)
+
     return {
         "id": job.id,
         "filename": job.filename,
@@ -190,6 +216,12 @@ def get_job(
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "error": job.error,
         "card_log": card_log,
+        "tokens_input": job.tokens_input or 0,
+        "tokens_output": job.tokens_output or 0,
+        "processing_secs": job.processing_secs or 0.0,
+        "filesize": job.filesize or 0,
+        "underlines": ul_total,
+        "highlights": hl_total,
     }
 
 
@@ -209,9 +241,12 @@ def download_job(
     if not output_path.exists():
         raise HTTPException(status_code=404, detail="Output file not found")
 
+    stem = PurePath(job.filename).stem
+    download_name = f"{stem}_CUT.docx"
+
     return FileResponse(
         path=str(output_path),
-        filename=f"traced_{job.filename}",
+        filename=download_name,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
@@ -233,6 +268,39 @@ def delete_job(
     db.delete(job)
     db.commit()
     return {"status": "deleted"}
+
+
+@app.get("/api/stats")
+def get_stats(
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    jobs = db.query(Job).filter(Job.status == "done").all()
+    total_ul = 0
+    total_hl = 0
+    total_tokens_input = 0
+    total_tokens_output = 0
+    total_processing_secs = 0.0
+    total_filesize = 0
+
+    for j in jobs:
+        ul, hl = _job_ul_hl_totals(j)
+        total_ul += ul
+        total_hl += hl
+        total_tokens_input += j.tokens_input or 0
+        total_tokens_output += j.tokens_output or 0
+        total_processing_secs += j.processing_secs or 0.0
+        total_filesize += j.filesize or 0
+
+    return {
+        "jobs_completed": len(jobs),
+        "tokens_input": total_tokens_input,
+        "tokens_output": total_tokens_output,
+        "processing_secs": total_processing_secs,
+        "filesize": total_filesize,
+        "underlines": total_ul,
+        "highlights": total_hl,
+    }
 
 
 # Serve built frontend in production
