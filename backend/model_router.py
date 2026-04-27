@@ -20,6 +20,8 @@ models.json schema per entry:
 import asyncio
 import json
 import logging
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -30,6 +32,26 @@ logger = logging.getLogger(__name__)
 
 MODELS_FILE = Path(__file__).parent / "models.json"
 _POLL_INTERVAL = 2.0  # seconds between mtime checks
+_CLI_HAIKU_ID = "claude_cli_haiku"
+_CLI_HAIKU_MODEL = "claude-haiku-4-5-20251001"
+
+
+def _make_cli_haiku() -> Optional["ModelConfig"]:
+    """Return a ModelConfig for Haiku via the claude CLI, or None if the CLI is not in PATH."""
+    if not shutil.which("claude"):
+        return None
+    return ModelConfig(
+        id=_CLI_HAIKU_ID,
+        name="Claude Haiku (claude CLI)",
+        provider="claude_cli",
+        model=_CLI_HAIKU_MODEL,
+        api_key="",
+        enabled=True,
+        preference=50,
+        timeout_secs=60.0,
+        max_tokens=2048,
+        max_concurrent=1,
+    )
 
 
 @dataclass
@@ -102,18 +124,24 @@ class ModelRouter:
 
     def _reload(self) -> None:
         try:
-            configs = _parse_models(MODELS_FILE)
+            file_configs = _parse_models(MODELS_FILE)
             self._mtime = MODELS_FILE.stat().st_mtime
-            self._models = configs
-            self._update_semaphores(configs)
-            enabled = [m for m in configs if m.enabled]
-            logger.info(
-                "models.json loaded: %d total, %d enabled", len(configs), len(enabled)
-            )
         except FileNotFoundError:
-            logger.warning("models.json not found at %s — no models available", MODELS_FILE)
+            file_configs = []
+            logger.warning("models.json not found at %s", MODELS_FILE)
         except Exception as exc:
             logger.error("Failed to load models.json: %s", exc)
+            return
+
+        configs = list(file_configs)
+        cli_model = _make_cli_haiku()
+        if cli_model and not any(m.id == cli_model.id for m in configs):
+            configs.append(cli_model)
+
+        self._models = configs
+        self._update_semaphores(configs)
+        enabled = [m for m in configs if m.enabled]
+        logger.info("models reloaded: %d total, %d enabled", len(configs), len(enabled))
 
     async def _watch_loop(self) -> None:
         while True:
@@ -211,6 +239,38 @@ class ModelRouter:
             }
             return data["content"][0]["text"], tokens
 
+    async def _call_claude_cli(
+        self,
+        cfg: ModelConfig,
+        system: str,
+        user_msg: str,
+        max_tokens: int,
+    ) -> tuple[str, dict]:
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            raise RuntimeError("claude CLI not found in PATH")
+
+        def _run() -> subprocess.CompletedProcess:
+            return subprocess.run(
+                [
+                    claude_bin, "-p",
+                    "--system-prompt", system,
+                    "--model", cfg.model,
+                    "--output-format", "text",
+                    user_msg,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=cfg.timeout_secs,
+            )
+
+        result = await asyncio.to_thread(_run)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"claude CLI exited {result.returncode}: {result.stderr[:200]}"
+            )
+        return result.stdout, {"input": 0, "output": 0}
+
     async def _dispatch(
         self,
         cfg: ModelConfig,
@@ -222,6 +282,8 @@ class ModelRouter:
             return await self._call_openai_compat(cfg, system, user_msg, max_tokens)
         if cfg.provider == "anthropic":
             return await self._call_anthropic(cfg, system, user_msg, max_tokens)
+        if cfg.provider == "claude_cli":
+            return await self._call_claude_cli(cfg, system, user_msg, max_tokens)
         raise ValueError(f"Unknown provider '{cfg.provider}' for model '{cfg.id}'")
 
     # ── Public call interface ─────────────────────────────────────────────────

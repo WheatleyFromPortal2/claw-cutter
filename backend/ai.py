@@ -4,23 +4,28 @@ from pathlib import Path
 
 from model_router import router
 
-_PROMPTS_FILE = Path(__file__).parent / "prompts.json"
-_prompt_mtime: float = 0.0
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+_prompt_mtime: dict = {}
 _prompt_cache: dict = {}
 
 
 def get_prompts() -> dict:
-    """Return prompts dict, reloading from disk if the file has changed."""
+    """Return prompts dict, reloading from disk if either file has changed."""
     global _prompt_mtime, _prompt_cache
     try:
-        mtime = _PROMPTS_FILE.stat().st_mtime
-        if mtime != _prompt_mtime:
-            with open(_PROMPTS_FILE) as f:
-                _prompt_cache = json.load(f)
-            _prompt_mtime = mtime
+        ul_file = _PROMPTS_DIR / "underline.txt"
+        hl_file = _PROMPTS_DIR / "highlight.txt"
+        ul_mtime = ul_file.stat().st_mtime
+        hl_mtime = hl_file.stat().st_mtime
+        if ul_mtime != _prompt_mtime.get("underline") or hl_mtime != _prompt_mtime.get("highlight"):
+            _prompt_cache = {
+                "underline": ul_file.read_text(),
+                "highlight": hl_file.read_text(),
+            }
+            _prompt_mtime = {"underline": ul_mtime, "highlight": hl_mtime}
     except Exception as exc:
         if not _prompt_cache:
-            raise RuntimeError(f"Failed to load prompts.json: {exc}")
+            raise RuntimeError(f"Failed to load prompts: {exc}")
     return _prompt_cache
 
 

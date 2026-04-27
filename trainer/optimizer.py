@@ -28,8 +28,15 @@ Critical constraints that must be preserved in every prompt you write:
 - Underline target: 20-35% of card body by character count
 - Highlight target: 15-25% of underlined text by character count
 
-You will receive the current prompts, their performance metrics, and concrete examples of
-good and bad outputs. Generate improved variants that address the weakest metrics.
+The MOST IMPORTANT quality metric is logical coherence (logic_mean, scored by Claude):
+- The underlined passages must form a coherent CAUSE→MECHANISM→IMPACT chain
+- Critical reasoning steps must NOT be skipped — even if they don't seem "important"
+- Reading only the underlines should let a debater reconstruct the full argument
+- The highlights should form a telegraphic skeleton that captures that chain
+
+You will receive the current prompts, their performance metrics (including logic_mean),
+and concrete examples of good and bad outputs. Generate improved variants that address
+the weakest metrics, prioritizing logic coherence above ratio/validity metrics.
 
 Return ONLY a JSON object with this exact structure — no preamble, no explanation outside it:
 {
@@ -157,6 +164,11 @@ class PromptOptimizer:
                 marker = "★" if h.get("is_best") else " "
                 hist_lines += f"  {marker} composite={h['composite']:.4f}  (iter {h['iteration']})\n"
 
+        logic_line = (
+            f"  Logic coherence {score.logic_mean:6.1%}   (target >70%)  ← PRIORITY\n"
+            if score.logic_mean is not None
+            else "  Logic coherence  n/a    (no API key — enable for logic eval)\n"
+        )
         user_msg = f"""CURRENT UNDERLINE PROMPT:
 ---
 {current_prompts['underline']}
@@ -174,7 +186,7 @@ PERFORMANCE METRICS ({score.n_cards} cards):
   HL JSON valid   {score.hl_valid_rate:6.1%}   (target >95%)
   HL exact match  {score.hl_exact_rate:6.1%}   (target >95%)
   HL ratio mean   {score.hl_ratio_mean:6.1%}   (target 15-25%)  score={score.hl_ratio_score:.3f}
-  COMPOSITE       {score.composite:6.4f}   (max 1.0000)
+{logic_line}  COMPOSITE       {score.composite:6.4f}   (max 1.0000)
 {hist_lines}
 {_fmt_examples(good_ex, "GOOD OUTPUTS (these worked — preserve what makes them work)")}
 {_fmt_examples(bad_ex, "BAD OUTPUTS (these failed — fix the root cause)")}

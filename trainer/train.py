@@ -40,7 +40,7 @@ sys.path.insert(0, str(BACKEND_DIR))
 
 from docx_utils import strip_cutting, extract_text_from_xml  # noqa: E402
 from ai import parse_cards  # noqa: E402
-from evaluator import evaluate_prompts, good_examples, bad_examples, EvalScore  # noqa: E402
+from evaluator import evaluate_prompts, good_examples, bad_examples, EvalScore, LogicEvaluator  # noqa: E402
 from optimizer import PromptOptimizer  # noqa: E402
 
 from rich.console import Console
@@ -125,6 +125,8 @@ def print_score_table(score: EvalScore, title: str = "Evaluation Results") -> No
     row("HL JSON valid",    score.hl_valid_rate,  "> 95%")
     row("HL exact match",   score.hl_exact_rate,  "> 95%")
     row("HL ratio score",   score.hl_ratio_score, "15–25%")
+    if score.logic_mean is not None:
+        row("Logic coherence",  score.logic_mean,    "> 70%")
     t.add_section()
 
     comp_color = score_color(score.composite)
@@ -144,12 +146,16 @@ def print_score_table(score: EvalScore, title: str = "Evaluation Results") -> No
 
 def print_comparison_table(scores: list[tuple[str, EvalScore, str]]) -> None:
     """scores = [(label, score, rationale), ...]"""
+    has_logic = any(s.logic_mean is not None for _, s, _ in scores)
+
     t = Table(box=box.SIMPLE_HEAVY, show_header=True, header_style="bold dim")
     t.add_column("Variant", width=14)
     t.add_column("UL exact", justify="right", width=10)
     t.add_column("UL ratio", justify="right", width=10)
     t.add_column("HL exact", justify="right", width=10)
     t.add_column("HL ratio", justify="right", width=10)
+    if has_logic:
+        t.add_column("Logic", justify="right", width=10)
     t.add_column("Composite", justify="right", width=12)
     t.add_column("Change", justify="right", width=10)
     t.add_column("Note", width=35)
@@ -160,25 +166,32 @@ def print_comparison_table(scores: list[tuple[str, EvalScore, str]]) -> None:
         delta = s.composite - baseline_comp
         if label == "current":
             delta_str = "[dim]—[/dim]"
-            style = ""
         elif delta > 0:
             delta_str = f"[green]+{delta:.4f}[/green]"
-            style = ""
         else:
             delta_str = f"[red]{delta:.4f}[/red]"
-            style = "dim"
 
         comp_color = score_color(s.composite)
-        t.add_row(
+        row_cells = [
             label,
             _pct(s.ul_exact_rate),
             _pct(s.ul_ratio_mean),
             _pct(s.hl_exact_rate),
             _pct(s.hl_ratio_mean),
+        ]
+        if has_logic:
+            logic_str = (
+                f"[{score_color(s.logic_mean)}]{_pct(s.logic_mean)}[/{score_color(s.logic_mean)}]"
+                if s.logic_mean is not None
+                else "[dim]—[/dim]"
+            )
+            row_cells.append(logic_str)
+        row_cells += [
             f"[{comp_color}]{s.composite:.4f}[/{comp_color}]",
             delta_str,
             f"[dim]{note[:34]}[/dim]",
-        )
+        ]
+        t.add_row(*row_cells)
 
     console.print(t)
 
@@ -189,6 +202,7 @@ async def run_evaluation(
     highlight_prompt: str,
     cards: list[dict],
     label: str,
+    logic_client=None,
 ) -> EvalScore:
     with Progress(
         SpinnerColumn(),
@@ -206,7 +220,8 @@ async def run_evaluation(
             prog.update(task, completed=done)
 
         score = await evaluate_prompts(
-            underline_prompt, highlight_prompt, cards, progress_cb=cb
+            underline_prompt, highlight_prompt, cards,
+            progress_cb=cb, logic_client=logic_client,
         )
     return score
 
@@ -248,6 +263,14 @@ async def main(args: argparse.Namespace) -> None:
         console.print(Panel(str(exc), title="[red]API Key Error[/red]", border_style="red"))
         return
 
+    # ── init logic evaluator (API key or claude CLI) ──────────────────────────
+    logic_client = LogicEvaluator.create_if_available(api_key=args.api_key)
+    if logic_client:
+        mode = "API" if logic_client._api_key else "claude CLI"
+        console.print(f"  [green]✓[/green] Logic evaluator enabled (Claude Haiku via {mode})\n")
+    else:
+        console.print("  [dim]Logic evaluator disabled (no API key and claude CLI not found)[/dim]\n")
+
     # ── load current prompts ──────────────────────────────────────────────────
     with open(PROMPTS_FILE) as f:
         best_prompts = json.load(f)
@@ -258,7 +281,7 @@ async def main(args: argparse.Namespace) -> None:
     sample = random.sample(all_cards, min(args.sample, len(all_cards)))
     baseline_score = await run_evaluation(
         current_prompts["underline"], current_prompts["highlight"],
-        sample, "baseline"
+        sample, "baseline", logic_client=logic_client,
     )
     print_score_table(baseline_score, title="Baseline — current prompts.json")
 
@@ -318,7 +341,7 @@ async def main(args: argparse.Namespace) -> None:
         # re-evaluate current on same sample (fair comparison baseline)
         iter_baseline = await run_evaluation(
             current_prompts["underline"], current_prompts["highlight"],
-            sample, "current (re-eval)"
+            sample, "current (re-eval)", logic_client=logic_client,
         )
 
         # ── evaluate each variant ─────────────────────────────────────────────
@@ -329,7 +352,7 @@ async def main(args: argparse.Namespace) -> None:
             ul = variant.get("underline", current_prompts["underline"])
             hl = variant.get("highlight", current_prompts["highlight"])
             note = variant.get("rationale", "")
-            vscore = await run_evaluation(ul, hl, sample, f"variant {vi}/{len(variants)}")
+            vscore = await run_evaluation(ul, hl, sample, f"variant {vi}/{len(variants)}", logic_client=logic_client)
             variant_scores.append((f"variant {vi}", vscore, note))
 
         print_comparison_table(variant_scores)

@@ -31,9 +31,29 @@ from database import Base, Job, SessionLocal, engine, get_db
 from model_router import router as model_router
 from tasks import run_cutting_job
 
-APP_TOKEN = os.getenv("APP_TOKEN", "")
 DATA_DIR = os.getenv("DATA_DIR", "./data")
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+def _load_tokens() -> tuple[set[str], set[str]]:
+    admin_tokens: set[str] = set()
+    user_tokens: set[str] = set()
+
+    legacy = os.getenv("APP_TOKEN", "").strip()
+    if legacy:
+        admin_tokens.add(legacy)
+
+    for t in os.getenv("ADMIN_TOKENS", "").split(","):
+        t = t.strip()
+        if t:
+            admin_tokens.add(t)
+
+    for t in os.getenv("USER_TOKENS", "").split(","):
+        t = t.strip()
+        if t:
+            user_tokens.add(t)
+
+    return admin_tokens, user_tokens
 
 
 @asynccontextmanager
@@ -75,11 +95,24 @@ app.add_middleware(
 )
 
 
-def verify_token(authorization: Optional[str] = Header(None)) -> None:
-    if not APP_TOKEN:
-        return
-    if not authorization or authorization != f"Bearer {APP_TOKEN}":
+def verify_token(authorization: Optional[str] = Header(None)) -> str:
+    """Return role ('admin' or 'user'), or raise 401/403."""
+    admin_tokens, user_tokens = _load_tokens()
+    if not admin_tokens and not user_tokens:
+        return "admin"
+    if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
+    token = authorization[len("Bearer "):]
+    if token in admin_tokens:
+        return "admin"
+    if token in user_tokens:
+        return "user"
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def require_admin(role: str = Depends(verify_token)) -> None:
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
 
 
 @app.get("/api/prompts")
@@ -255,7 +288,7 @@ def download_job(
 def delete_job(
     job_id: str,
     db: Session = Depends(get_db),
-    _: None = Depends(verify_token),
+    _: None = Depends(require_admin),
 ):
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
