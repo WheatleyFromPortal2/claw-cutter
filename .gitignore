@@ -10,6 +10,7 @@ venv/
 backend/data/         
 backend/card_tracer.db
 models.json
+*.log
 				    
 # Environment
 backend/.env                                                                                 
