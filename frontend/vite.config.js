@@ -9,6 +9,10 @@ export default defineConfig({
         target: "http://localhost:8000",
         changeOrigin: true,
       },
+      "/status": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
     },
     allowedHosts: [ "debate.hunterdorrill.xyz" ],
   },

@@ -399,9 +399,14 @@ function Header({ onTokenReset }) {
         <span className="header-logo">✦</span>
         Claw Cutter
       </div>
-      <button className="btn-token-reset" onClick={onTokenReset} title="Change token">
-        Token
-      </button>
+      <div className="header-actions">
+        <a className="btn-token-reset" href="/status" target="_blank" rel="noreferrer">
+          Status
+        </a>
+        <button className="btn-token-reset" onClick={onTokenReset} title="Change token">
+          Token
+        </button>
+      </div>
     </header>
   );
 }

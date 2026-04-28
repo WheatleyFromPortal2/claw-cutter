@@ -4,11 +4,12 @@ __pycache__/
 *.egg-info/ 
 .venv/                
 venv/         
-*.db  
+*.db
+*.db-shm
+*.db-wal
 		  
 # Backend data
 backend/data/         
-backend/card_tracer.db
 models.json
 *.log
 				    
