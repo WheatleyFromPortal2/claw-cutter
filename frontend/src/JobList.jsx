@@ -14,7 +14,7 @@ function formatDate(iso) {
   return d.toLocaleString();
 }
 
-export default function JobList({ onSelectJob, refreshKey }) {
+export default function JobList({ onSelectJob, refreshKey, role }) {
   const [jobs, setJobs] = useState([]);
   const [error, setError] = useState(null);
 
@@ -83,12 +83,14 @@ export default function JobList({ onSelectJob, refreshKey }) {
               </td>
               <td className="date-cell">{formatDate(job.created_at)}</td>
               <td>
-                <button
-                  className="btn-delete"
-                  onClick={(e) => handleDelete(e, job.id)}
-                >
-                  ✕
-                </button>
+                {role === "admin" && (
+                  <button
+                    className="btn-delete"
+                    onClick={(e) => handleDelete(e, job.id)}
+                  >
+                    ✕
+                  </button>
+                )}
               </td>
             </tr>
           ))}

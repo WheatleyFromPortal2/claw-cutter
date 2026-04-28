@@ -7,6 +7,7 @@ from pathlib import Path
 from database import SessionLocal, Job
 from docx_utils import strip_cutting, extract_text_from_xml, apply_cuttings, build_output_docx
 from ai import parse_cards, underline_card, highlight_card, get_prompts
+from metrics import record_tokens
 
 DATA_DIR = os.getenv("DATA_DIR", "./data")
 logger = logging.getLogger(__name__)
@@ -63,8 +64,11 @@ async def run_cutting_job(job_id: str) -> None:
 
         for card in cards:
             underline_result, ul_model, ul_tokens = await underline_card(card, topic, underline_prompt)
-            total_input_tokens += ul_tokens.get("input", 0)
-            total_output_tokens += ul_tokens.get("output", 0)
+            ul_in = ul_tokens.get("input", 0)
+            ul_out = ul_tokens.get("output", 0)
+            total_input_tokens += ul_in
+            total_output_tokens += ul_out
+            record_tokens(ul_model, ul_in + ul_out)
 
             relevant = underline_result.get("relevant", False)
             underlined = underline_result.get("underlined", [])
@@ -75,8 +79,11 @@ async def run_cutting_job(job_id: str) -> None:
             if should_cut:
                 if underlined:
                     highlight_result, hl_model, hl_tokens = await highlight_card(card, underlined, highlight_prompt)
-                    total_input_tokens += hl_tokens.get("input", 0)
-                    total_output_tokens += hl_tokens.get("output", 0)
+                    hl_in = hl_tokens.get("input", 0)
+                    hl_out = hl_tokens.get("output", 0)
+                    total_input_tokens += hl_in
+                    total_output_tokens += hl_out
+                    record_tokens(hl_model, hl_in + hl_out)
                     highlighted = highlight_result.get("highlighted", [])
                 else:
                     highlighted = []

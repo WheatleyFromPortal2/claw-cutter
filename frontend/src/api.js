@@ -51,3 +51,6 @@ export const getStats = () =>
 
 export const getPrompts = () =>
   fetch(`${BASE}/prompts`, { headers: headers() });
+
+export const getRole = () =>
+  fetch(`${BASE}/role`, { headers: headers() });

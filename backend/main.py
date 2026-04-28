@@ -1,12 +1,14 @@
 import json
 import os
 import shutil
+import subprocess
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path, PurePath
 from typing import Optional
 
+import psutil
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,12 +24,13 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
 from ai import get_prompts
 from database import Base, Job, SessionLocal, engine, get_db
+from metrics import get_current_user_count, get_tokens_per_sec, get_uptime_secs, record_user
 from model_router import router as model_router
 from tasks import run_cutting_job
 
@@ -38,10 +41,6 @@ MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 def _load_tokens() -> tuple[set[str], set[str]]:
     admin_tokens: set[str] = set()
     user_tokens: set[str] = set()
-
-    legacy = os.getenv("APP_TOKEN", "").strip()
-    if legacy:
-        admin_tokens.add(legacy)
 
     for t in os.getenv("ADMIN_TOKENS", "").split(","):
         t = t.strip()
@@ -104,8 +103,10 @@ def verify_token(authorization: Optional[str] = Header(None)) -> str:
         raise HTTPException(status_code=401, detail="Unauthorized")
     token = authorization[len("Bearer "):]
     if token in admin_tokens:
+        record_user(token)
         return "admin"
     if token in user_tokens:
+        record_user(token)
         return "user"
     raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -113,6 +114,11 @@ def verify_token(authorization: Optional[str] = Header(None)) -> str:
 def require_admin(role: str = Depends(verify_token)) -> None:
     if role != "admin":
         raise HTTPException(status_code=403, detail="Forbidden")
+
+
+@app.get("/api/role")
+def get_role(role: str = Depends(verify_token)):
+    return {"role": role}
 
 
 @app.get("/api/prompts")
@@ -334,6 +340,149 @@ def get_stats(
         "underlines": total_ul,
         "highlights": total_hl,
     }
+
+
+def _git_commit() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            cwd=Path(__file__).parent.parent,
+        )
+        return result.stdout.strip()[:12] if result.returncode == 0 else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _data_dir_size_bytes() -> int:
+    total = 0
+    data_path = Path(DATA_DIR)
+    if data_path.exists():
+        for f in data_path.rglob("*"):
+            if f.is_file():
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    pass
+    return total
+
+
+def _db_size_bytes() -> int:
+    db_path = Path(__file__).parent / "claw_cutter.db"
+    try:
+        return db_path.stat().st_size
+    except OSError:
+        return 0
+
+
+@app.get("/api/status")
+def api_status(db: Session = Depends(get_db)):
+    running_jobs = db.query(Job).filter(Job.status == "running").count()
+    queued_jobs = db.query(Job).filter(Job.status == "queued").count()
+
+    return {
+        "git_commit": _git_commit(),
+        "uptime_secs": get_uptime_secs(),
+        "current_users": get_current_user_count(),
+        "cpu_percent": psutil.cpu_percent(interval=0.1),
+        "tokens_per_sec": get_tokens_per_sec(),
+        "db_size_bytes": _db_size_bytes(),
+        "data_dir_size_bytes": _data_dir_size_bytes(),
+        "running_jobs": running_jobs,
+        "queued_jobs": queued_jobs,
+    }
+
+
+def _fmt_uptime(secs: float) -> str:
+    secs = int(secs)
+    d, rem = divmod(secs, 86400)
+    h, rem = divmod(rem, 3600)
+    m, s = divmod(rem, 60)
+    parts = []
+    if d:
+        parts.append(f"{d}d")
+    if h or d:
+        parts.append(f"{h}h")
+    if m or h or d:
+        parts.append(f"{m}m")
+    parts.append(f"{s}s")
+    return " ".join(parts)
+
+
+def _fmt_bytes(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+@app.get("/status", response_class=HTMLResponse)
+def status_page(db: Session = Depends(get_db)):
+    running_jobs = db.query(Job).filter(Job.status == "running").count()
+    queued_jobs = db.query(Job).filter(Job.status == "queued").count()
+
+    git_commit = _git_commit()
+    uptime = _fmt_uptime(get_uptime_secs())
+    current_users = get_current_user_count()
+    cpu = psutil.cpu_percent(interval=0.1)
+    tps = get_tokens_per_sec()
+    db_size = _fmt_bytes(_db_size_bytes())
+    data_size = _fmt_bytes(_data_dir_size_bytes())
+
+    tps_rows = ""
+    for model_id, rate in tps.items():
+        tps_rows += f"<tr><td>{model_id}</td><td>{rate:.1f} tok/s</td></tr>\n"
+    if not tps_rows:
+        tps_rows = "<tr><td colspan='2' style='color:#6b7280'>No recent activity</td></tr>"
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="5">
+  <title>Claw Cutter — Status</title>
+  <style>
+    body {{ font-family: system-ui, sans-serif; background: #0f1117; color: #e2e4ef; margin: 0; padding: 32px; }}
+    h1 {{ font-size: 20px; font-weight: 700; margin-bottom: 24px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }}
+    .card {{ background: #1a1d27; border: 1px solid #2e3248; border-radius: 8px; padding: 16px; }}
+    .label {{ font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }}
+    .value {{ font-size: 22px; font-weight: 700; font-family: monospace; }}
+    table {{ width: 100%; border-collapse: collapse; background: #1a1d27; border: 1px solid #2e3248; border-radius: 8px; overflow: hidden; }}
+    th, td {{ padding: 10px 14px; text-align: left; border-bottom: 1px solid #2e3248; font-size: 13px; }}
+    th {{ font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; }}
+    tr:last-child td {{ border-bottom: none; }}
+    .note {{ font-size: 11px; color: #6b7280; margin-top: 16px; }}
+    a {{ color: #6366f1; text-decoration: none; }}
+  </style>
+</head>
+<body>
+  <h1>✦ Claw Cutter — Status</h1>
+  <div class="grid">
+    <div class="card"><div class="label">Git Commit</div><div class="value" style="font-size:14px">{git_commit}</div></div>
+    <div class="card"><div class="label">App Uptime</div><div class="value">{uptime}</div></div>
+    <div class="card"><div class="label">Current Users</div><div class="value">{current_users}</div></div>
+    <div class="card"><div class="label">CPU Usage</div><div class="value">{cpu:.1f}%</div></div>
+    <div class="card"><div class="label">Running Jobs</div><div class="value">{running_jobs}</div></div>
+    <div class="card"><div class="label">Queued Jobs</div><div class="value">{queued_jobs}</div></div>
+    <div class="card"><div class="label">Database Size</div><div class="value">{db_size}</div></div>
+    <div class="card"><div class="label">Used Space (/data)</div><div class="value">{data_size}</div></div>
+  </div>
+
+  <h2 style="font-size:14px;font-weight:600;margin-bottom:12px">Tokens/s (last 60s, per model)</h2>
+  <table>
+    <thead><tr><th>Model</th><th>Rate</th></tr></thead>
+    <tbody>{tps_rows}</tbody>
+  </table>
+
+  <p class="note">Auto-refreshes every 5 seconds · <a href="/">← Back to app</a> · JSON: <a href="/api/status">/api/status</a></p>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
 
 
 # Serve built frontend in production

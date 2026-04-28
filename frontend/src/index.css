@@ -46,8 +46,6 @@ body {
 .main {
   flex: 1;
   padding: 24px;
-  max-width: 1200px;
-  margin: 0 auto;
   width: 100%;
 }
 
@@ -607,7 +605,6 @@ body {
 
 /* ── Job status view ── */
 .job-status {
-  max-width: 720px;
   display: flex;
   flex-direction: column;
   gap: 20px;

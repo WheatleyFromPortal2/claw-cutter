@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import JobList from "./JobList.jsx";
 import JobStatus from "./JobStatus.jsx";
-import { submitJob, listModels, getStats, getPrompts } from "./api.js";
+import { submitJob, listModels, getStats, getPrompts, getRole } from "./api.js";
 
 const HL_COLORS = [
   { value: "yellow", label: "Yellow" },
@@ -107,11 +107,16 @@ export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
 
   const [models, setModels] = useState([]);
+  const [role, setRole] = useState(null);
 
   useEffect(() => {
     listModels()
       .then((r) => r.ok && r.json())
       .then((data) => data && setModels(data))
+      .catch(() => {});
+    getRole()
+      .then((r) => r.ok && r.json())
+      .then((data) => data && setRole(data.role))
       .catch(() => {});
   }, [token]);
 
@@ -380,7 +385,7 @@ export default function App() {
         {/* Job list */}
         <section className="list-panel">
           <GlobalStats refreshKey={refreshKey} />
-          <JobList onSelectJob={setActiveJobId} refreshKey={refreshKey} />
+          <JobList onSelectJob={setActiveJobId} refreshKey={refreshKey} role={role} />
         </section>
       </main>
     </div>
