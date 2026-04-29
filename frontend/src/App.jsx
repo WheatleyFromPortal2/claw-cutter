@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import JobList from "./JobList.jsx";
 import JobStatus from "./JobStatus.jsx";
+import Projects from "./Projects.jsx";
+import ProjectDetail from "./ProjectDetail.jsx";
+import CardViewer from "./CardViewer.jsx";
 import { submitJob, listModels, getStats, getPrompts, getRole } from "./api.js";
 
 const HL_COLORS = [
@@ -18,7 +21,7 @@ function TokenGate({ onSave }) {
     <div className="token-gate">
       <div className="token-gate-box">
         <h2>Enter API Token</h2>
-        <p>Enter the shared access token to use Claw Cutter.</p>
+        <p>Enter the shared access token to use LionClaw.</p>
         <input
           type="password"
           placeholder="Bearer token"
@@ -105,6 +108,9 @@ export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem("token") || "");
   const [activeJobId, setActiveJobId] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [mode, setMode] = useState("cut"); // "cut" | "research"
+  const [activeProjectId, setActiveProjectId] = useState(null);
+  const [activeCardId, setActiveCardId] = useState(null);
 
   const [models, setModels] = useState([]);
   const [role, setRole] = useState(null);
@@ -137,7 +143,7 @@ export default function App() {
   const [file, setFile] = useState(null);
   const [dragging, setDragging] = useState(false);
   const [hlColor, setHlColor] = useState("cyan");
-  const [mode, setMode] = useState("all");
+  const [cutMode, setCutMode] = useState("all");
   const [topic, setTopic] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [underlinePrompt, setUnderlinePrompt] = useState("");
@@ -187,8 +193,8 @@ export default function App() {
     try {
       const settings = {
         hl_color: hlColor,
-        mode,
-        topic: mode === "topic_only" ? topic : "",
+        mode: cutMode,
+        topic: cutMode === "topic_only" ? topic : "",
         underline_prompt: underlinePrompt,
         highlight_prompt: highlightPrompt,
       };
@@ -205,10 +211,47 @@ export default function App() {
 
   if (!token) return <TokenGate onSave={handleSaveToken} />;
 
+  // Research mode views
+  if (mode === "research") {
+    if (activeCardId) {
+      return (
+        <div className="app">
+          <Header mode={mode} onModeChange={(m) => { setMode(m); setActiveProjectId(null); setActiveCardId(null); }} onTokenReset={() => { localStorage.removeItem("token"); setToken(""); }} />
+          <main className="main">
+            <CardViewer cardId={activeCardId} onBack={() => setActiveCardId(null)} />
+          </main>
+        </div>
+      );
+    }
+    if (activeProjectId) {
+      return (
+        <div className="app">
+          <Header mode={mode} onModeChange={(m) => { setMode(m); setActiveProjectId(null); setActiveCardId(null); }} onTokenReset={() => { localStorage.removeItem("token"); setToken(""); }} />
+          <main className="main">
+            <ProjectDetail
+              projectId={activeProjectId}
+              onBack={() => setActiveProjectId(null)}
+              onSelectCard={(id) => setActiveCardId(id)}
+            />
+          </main>
+        </div>
+      );
+    }
+    return (
+      <div className="app">
+        <Header mode={mode} onModeChange={(m) => { setMode(m); setActiveProjectId(null); setActiveCardId(null); }} onTokenReset={() => { localStorage.removeItem("token"); setToken(""); }} />
+        <main className="main">
+          <Projects onSelectProject={(id) => setActiveProjectId(id)} />
+        </main>
+      </div>
+    );
+  }
+
+  // Cut mode: job detail view
   if (activeJobId) {
     return (
       <div className="app">
-        <Header onTokenReset={() => { localStorage.removeItem("token"); setToken(""); }} />
+        <Header mode={mode} onModeChange={(m) => { setMode(m); setActiveProjectId(null); setActiveCardId(null); }} onTokenReset={() => { localStorage.removeItem("token"); setToken(""); }} />
         <main className="main">
           <JobStatus jobId={activeJobId} onBack={() => { setActiveJobId(null); setRefreshKey((k) => k + 1); }} />
         </main>
@@ -216,9 +259,10 @@ export default function App() {
     );
   }
 
+  // Cut mode: main upload view
   return (
     <div className="app">
-      <Header onTokenReset={() => { localStorage.removeItem("token"); setToken(""); }} />
+      <Header mode={mode} onModeChange={(m) => { setMode(m); setActiveProjectId(null); setActiveCardId(null); }} onTokenReset={() => { localStorage.removeItem("token"); setToken(""); }} />
       <main className="main two-col">
         {/* Upload panel */}
         <section className="upload-panel">
@@ -297,21 +341,21 @@ export default function App() {
               <label className="settings-label">Mode</label>
               <div className="toggle-group">
                 <button
-                  className={`toggle-btn ${mode === "all" ? "active" : ""}`}
-                  onClick={() => setMode("all")}
+                  className={`toggle-btn ${cutMode === "all" ? "active" : ""}`}
+                  onClick={() => setCutMode("all")}
                 >
                   Cut All
                 </button>
                 <button
-                  className={`toggle-btn ${mode === "topic_only" ? "active" : ""}`}
-                  onClick={() => setMode("topic_only")}
+                  className={`toggle-btn ${cutMode === "topic_only" ? "active" : ""}`}
+                  onClick={() => setCutMode("topic_only")}
                 >
                   Topic Only
                 </button>
               </div>
             </div>
 
-            {mode === "topic_only" && (
+            {cutMode === "topic_only" && (
               <div className="settings-row col">
                 <label className="settings-label">Topic</label>
                 <textarea
@@ -392,13 +436,27 @@ export default function App() {
   );
 }
 
-function Header({ onTokenReset }) {
+function Header({ mode, onModeChange, onTokenReset }) {
   return (
     <header className="header">
       <div className="header-brand">
         <span className="header-logo">✦</span>
-        Claw Cutter
+        LionClaw
       </div>
+      <nav className="header-nav">
+        <button
+          className={`nav-tab ${mode === "cut" ? "active" : ""}`}
+          onClick={() => onModeChange("cut")}
+        >
+          Cut Cards
+        </button>
+        <button
+          className={`nav-tab ${mode === "research" ? "active" : ""}`}
+          onClick={() => onModeChange("research")}
+        >
+          Research
+        </button>
+      </nav>
       <div className="header-actions">
         <a className="btn-token-reset" href="/status" target="_blank" rel="noreferrer">
           Status

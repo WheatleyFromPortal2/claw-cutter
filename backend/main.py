@@ -26,13 +26,16 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ai import get_prompts
-from database import Base, Job, SessionLocal, engine, get_db
+from ai import get_prompts, generate_cite
+from card_export import export_cards_to_docx
+from database import Base, Job, Project, Card, SessionLocal, engine, get_db
 from metrics import get_current_user_count, get_tokens_per_sec, get_uptime_secs, record_user
 from model_router import router as model_router
-from tasks import run_cutting_job
+from tasks import run_cutting_job, run_research_job, run_project_cut_job
 
 DATA_DIR = os.getenv("DATA_DIR", "./data")
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -57,7 +60,6 @@ def _load_tokens() -> tuple[set[str], set[str]]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
     Base.metadata.create_all(bind=engine)
     model_router.start_watching()
 
@@ -74,15 +76,25 @@ async def lifespan(app: FastAPI):
                 shutil.rmtree(job_dir)
             db.delete(job)
 
+        # Reset in-progress research/cut jobs
+        for proj in db.query(Project).filter(
+            or_(Project.research_status == "running", Project.cut_status == "running")
+        ).all():
+            if proj.research_status == "running":
+                proj.research_status = "error"
+                proj.research_error = "Server restarted"
+            if proj.cut_status == "running":
+                proj.cut_status = "error"
+                proj.cut_error = "Server restarted"
+
         db.commit()
     finally:
         db.close()
 
     yield
-    # Shutdown (nothing to clean up)
 
 
-app = FastAPI(title="Claw Cutter", lifespan=lifespan)
+app = FastAPI(title="LionClaw", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -116,6 +128,8 @@ def require_admin(role: str = Depends(verify_token)) -> None:
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
+# ── Auth / meta ───────────────────────────────────────────────────────────────
+
 @app.get("/api/role")
 def get_role(role: str = Depends(verify_token)):
     return {"role": role}
@@ -141,6 +155,8 @@ def list_models(_: None = Depends(verify_token)):
         for m in model_router.all_models()
     ]
 
+
+# ── Docx cutting jobs (existing) ─────────────────────────────────────────────
 
 @app.post("/api/jobs")
 async def create_job(
@@ -342,6 +358,414 @@ def get_stats(
     }
 
 
+# ── Projects ──────────────────────────────────────────────────────────────────
+
+class ProjectCreate(BaseModel):
+    name: str
+    topic: Optional[str] = ""
+    description: Optional[str] = ""
+
+
+def _project_out(p: Project, db: Session) -> dict:
+    card_count = db.query(Card).filter(Card.project_id == p.id, Card.card_status != "trashed").count()
+    return {
+        "id": p.id,
+        "name": p.name,
+        "topic": p.topic or "",
+        "description": p.description or "",
+        "link_story": p.link_story or "",
+        "research_status": p.research_status or "idle",
+        "research_error": p.research_error or "",
+        "cut_status": p.cut_status or "idle",
+        "cut_error": p.cut_error or "",
+        "status": p.status or "active",
+        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "card_count": card_count,
+    }
+
+
+@app.get("/api/projects")
+def list_projects(
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    projects = db.query(Project).order_by(Project.created_at.desc()).all()
+    return [_project_out(p, db) for p in projects]
+
+
+@app.post("/api/projects")
+def create_project(
+    body: ProjectCreate,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    project = Project(
+        id=str(uuid.uuid4()),
+        name=body.name,
+        topic=body.topic or "",
+        description=body.description or "",
+        research_status="idle",
+        cut_status="idle",
+        status="active",
+        created_at=datetime.utcnow(),
+    )
+    db.add(project)
+    db.commit()
+    return _project_out(project, db)
+
+
+@app.get("/api/projects/{project_id}")
+def get_project(
+    project_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return _project_out(project, db)
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    topic: Optional[str] = None
+    description: Optional[str] = None
+
+
+@app.patch("/api/projects/{project_id}")
+def update_project(
+    project_id: str,
+    body: ProjectUpdate,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if body.name is not None:
+        project.name = body.name
+    if body.topic is not None:
+        project.topic = body.topic
+    if body.description is not None:
+        project.description = body.description
+    db.commit()
+    return _project_out(project, db)
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(
+    project_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    db.query(Card).filter(Card.project_id == project_id).delete()
+    db.delete(project)
+    db.commit()
+    return {"status": "deleted"}
+
+
+@app.post("/api/projects/{project_id}/research")
+def start_research(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.research_status == "running":
+        raise HTTPException(status_code=409, detail="Research already running")
+
+    project.research_status = "running"
+    project.research_error = None
+    db.commit()
+
+    background_tasks.add_task(run_research_job, project_id)
+    return {"status": "started"}
+
+
+@app.post("/api/projects/{project_id}/cut")
+def start_project_cut(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if project.cut_status == "running":
+        raise HTTPException(status_code=409, detail="Cut job already running")
+
+    project.cut_status = "running"
+    project.cut_error = None
+    db.commit()
+
+    background_tasks.add_task(run_project_cut_job, project_id)
+    return {"status": "started"}
+
+
+# ── Cards ─────────────────────────────────────────────────────────────────────
+
+def _card_out(c: Card) -> dict:
+    return {
+        "id": c.id,
+        "project_id": c.project_id or "",
+        "tag": c.tag or "",
+        "author": c.author or "",
+        "author_qualifications": c.author_qualifications or "",
+        "date": c.date or "",
+        "title": c.title or "",
+        "publisher": c.publisher or "",
+        "url": c.url or "",
+        "initials": c.initials or "",
+        "topic": c.topic or "",
+        "tags": json.loads(c.tags) if c.tags else [],
+        "card_text": c.card_text or "",
+        "underlined": json.loads(c.underlined) if c.underlined else [],
+        "highlighted": json.loads(c.highlighted) if c.highlighted else [],
+        "card_status": c.card_status or "researched",
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+    }
+
+
+@app.get("/api/projects/{project_id}/cards")
+def list_project_cards(
+    project_id: str,
+    card_status: Optional[str] = None,
+    q: Optional[str] = None,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    query = db.query(Card).filter(Card.project_id == project_id)
+    if card_status:
+        query = query.filter(Card.card_status == card_status)
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            or_(
+                Card.tag.ilike(like),
+                Card.author.ilike(like),
+                Card.publisher.ilike(like),
+                Card.title.ilike(like),
+                Card.initials.ilike(like),
+                Card.date.ilike(like),
+            )
+        )
+    return [_card_out(c) for c in query.order_by(Card.created_at.asc()).all()]
+
+
+@app.get("/api/cards")
+def search_cards(
+    project_id: Optional[str] = None,
+    card_status: Optional[str] = None,
+    q: Optional[str] = None,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    query = db.query(Card)
+    if project_id:
+        query = query.filter(Card.project_id == project_id)
+    if card_status:
+        query = query.filter(Card.card_status == card_status)
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            or_(
+                Card.tag.ilike(like),
+                Card.author.ilike(like),
+                Card.publisher.ilike(like),
+                Card.title.ilike(like),
+                Card.initials.ilike(like),
+                Card.date.ilike(like),
+            )
+        )
+    return [_card_out(c) for c in query.order_by(Card.created_at.desc()).all()]
+
+
+@app.get("/api/cards/{card_id}")
+def get_card(
+    card_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    card = db.query(Card).filter(Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    return _card_out(card)
+
+
+class CardUpdate(BaseModel):
+    tag: Optional[str] = None
+    author: Optional[str] = None
+    author_qualifications: Optional[str] = None
+    date: Optional[str] = None
+    title: Optional[str] = None
+    publisher: Optional[str] = None
+    url: Optional[str] = None
+    initials: Optional[str] = None
+    topic: Optional[str] = None
+    tags: Optional[list] = None
+    card_text: Optional[str] = None
+    underlined: Optional[list] = None
+    highlighted: Optional[list] = None
+
+
+@app.patch("/api/cards/{card_id}")
+def update_card(
+    card_id: str,
+    body: CardUpdate,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    card = db.query(Card).filter(Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+
+    fields = body.model_dump(exclude_none=True)
+    for key, val in fields.items():
+        if key in ("tags", "underlined", "highlighted"):
+            setattr(card, key, json.dumps(val))
+        else:
+            setattr(card, key, val)
+
+    card.updated_at = datetime.utcnow()
+    db.commit()
+    return _card_out(card)
+
+
+@app.post("/api/cards/{card_id}/approve")
+def approve_card(
+    card_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    card = db.query(Card).filter(Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    card.card_status = "approved"
+    card.updated_at = datetime.utcnow()
+    db.commit()
+    return {"id": card.id, "card_status": card.card_status}
+
+
+@app.post("/api/cards/{card_id}/trash")
+def trash_card(
+    card_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    card = db.query(Card).filter(Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    card.card_status = "trashed"
+    card.updated_at = datetime.utcnow()
+    db.commit()
+    return {"id": card.id, "card_status": card.card_status}
+
+
+@app.post("/api/cards/{card_id}/restore")
+def restore_card(
+    card_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    card = db.query(Card).filter(Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    card.card_status = "researched"
+    card.updated_at = datetime.utcnow()
+    db.commit()
+    return {"id": card.id, "card_status": card.card_status}
+
+
+class CiteRequest(BaseModel):
+    article_text: str
+
+
+@app.post("/api/cards/{card_id}/cite")
+async def generate_card_cite(
+    card_id: str,
+    body: CiteRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    card = db.query(Card).filter(Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+
+    cite, model_id, tokens = await generate_cite(body.article_text)
+    if cite.get("error"):
+        raise HTTPException(status_code=500, detail=cite["error"])
+
+    for field in ("author", "author_qualifications", "date", "title", "publisher", "url", "initials"):
+        val = cite.get(field)
+        if val:
+            setattr(card, field, val)
+
+    card.updated_at = datetime.utcnow()
+    db.commit()
+    return _card_out(card)
+
+
+class ExportRequest(BaseModel):
+    card_ids: list[str]
+    hl_color: Optional[str] = "cyan"
+
+
+@app.post("/api/cards/export")
+def export_cards(
+    body: ExportRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    cards = (
+        db.query(Card)
+        .filter(Card.id.in_(body.card_ids))
+        .all()
+    )
+    if not cards:
+        raise HTTPException(status_code=404, detail="No cards found")
+
+    # Preserve requested order
+    id_to_card = {c.id: c for c in cards}
+    ordered = [id_to_card[cid] for cid in body.card_ids if cid in id_to_card]
+
+    card_dicts = [
+        {
+            "tag": c.tag,
+            "author": c.author,
+            "author_qualifications": c.author_qualifications,
+            "date": c.date,
+            "title": c.title,
+            "publisher": c.publisher,
+            "url": c.url,
+            "initials": c.initials,
+            "card_text": c.card_text,
+            "underlined": c.underlined,
+            "highlighted": c.highlighted,
+        }
+        for c in ordered
+    ]
+
+    docx_bytes = export_cards_to_docx(card_dicts, body.hl_color or "cyan")
+
+    import io
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        io.BytesIO(docx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": "attachment; filename=lionclaw_export.docx"},
+    )
+
+
+# ── Status page & helpers ─────────────────────────────────────────────────────
+
 def _git_commit() -> str:
     try:
         result = subprocess.run(
@@ -370,7 +794,7 @@ def _data_dir_size_bytes() -> int:
 
 
 def _db_size_bytes() -> int:
-    db_path = Path(__file__).parent / "claw_cutter.db"
+    db_path = Path(__file__).parent / "lionclaw.db"
     try:
         return db_path.stat().st_size
     except OSError:
@@ -444,7 +868,7 @@ def status_page(db: Session = Depends(get_db)):
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="refresh" content="5">
-  <title>Claw Cutter — Status</title>
+  <title>LionClaw — Status</title>
   <style>
     body {{ font-family: system-ui, sans-serif; background: #0f1117; color: #e2e4ef; margin: 0; padding: 32px; }}
     h1 {{ font-size: 20px; font-weight: 700; margin-bottom: 24px; }}
@@ -461,7 +885,7 @@ def status_page(db: Session = Depends(get_db)):
   </style>
 </head>
 <body>
-  <h1>✦ Claw Cutter — Status</h1>
+  <h1>✦ LionClaw — Status</h1>
   <div class="grid">
     <div class="card"><div class="label">Git Commit</div><div class="value" style="font-size:14px">{git_commit}</div></div>
     <div class="card"><div class="label">App Uptime</div><div class="value">{uptime}</div></div>

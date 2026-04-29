@@ -1,0 +1,18 @@
+# research mode
+- [ ] view should take up the entierity of the screen, not just be limited to the left side
+	- [ ] in general for this repo, don't restrict the size of a screen to an arbitrary number and instead prioritize it filling the entire screen, but also maintain a usable scale
+- [ ] while researching, the log of what queries are issued, what research is being done, etc should be visible on the project screen instead of just "AI is researching articles for this project..."
+- [ ] while cutting cards display the log of what is actually happenings instead of just "AI is cutting approved cards..."
+- [ ] add button to approve all cards
+- [ ] add button to trash all cards that haven't been approved - [ ] ensure that the search criteria are updated when the argument is edited
+- [ ] "generate cite from article text button" should be replaced with "populate cite from Cite Creator" and should take in a cite formatted in Verbatim Cite Creator formatting and use it to populate the cite fields in the database
+	- [ ] don't populate the card text unless we have actually fetched the article
+	- [ ] when researching, follow the URL and extract all of the card text from the website and actually populate the card text
+- [ ] the AI should recognize when it does not have full text of an article and flag it
+	- [ ] there should also be a button called "populate article text" where users can paste in the article text. this should be present whether the AI decides that it already has the full text of an article
+- [ ] when cite evidence is not known with high confidence, mark it as null or equivalent in the database and display it in the UI instead of using "Smith, John"
+	- [ ] also display a flag when this is the case
+- [ ] add a button to add articles to the approved screen manually by pasting the article's URL
+- [ ] make a resources directory inside of backend/ and make it serve favicon.png if it is present
+- [ ] don't display the tag title in the "Researched" tab, only display the article title
+- [ ] when the cards are cut, display the cut version of the card in the browser so it can be seen without downloading

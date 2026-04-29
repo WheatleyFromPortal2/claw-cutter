@@ -1,0 +1,3 @@
+- [ ] backfiles importer and viewer
+	- [ ] maybe look at logos/haku.cards?
+	- [ ] make sure to include the season so that it can be queried
