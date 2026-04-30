@@ -36,6 +36,16 @@ Pull 2-12 short contiguous spans. Each span may be a full sentence or a meaningf
 - Transitional filler: "Furthermore,", "Moreover,", "In addition," at the start of spans
 - Redundant closing: "...which is what we would expect", "...as noted above"
 
+It is very important that when you think a card is done that you read what you have underlined constantly thinking “why did I underline this?” is this same thing said someplace else in the card, does this really help prove the argument I’m trying to make, should this be made into more than one card….all of these questions and more should be going through your head while reading the underlined stuff
+
+Do NOT underline
+First names
+Filler phrases like “Ahead of the announcement on Friday,”
+
+Do Underline
+Enough words to make the cards make sense. When you underline and the sentences don’t make sense when read it makes it harder for judges to understand what you are saying and often is counterproductive because when our mind reads something that doesn’t make sense it tries to correct which ends up causing stumbles and it ends up taking longer than if you had just included a few extra words. Remember we don’t just read as fast as we can. We read for comprehension i.e. while you are reading I should be able to stop you and ask “what did you just read?” and you should be able to give me a quick summary. If you can’t then you are not reading for comprehension. You want to make it easy for people to comprehend what they are reading.
+Last names and Qualifications of people quoted in the evidence who would lend credibility to your evidence. This is particularly important when the author of your evidence isn’t qualified.
+
 INDIVIDUAL EXAMPLES — KEEP SHORT:
 When a card uses a specific named person or case as an illustration (e.g., a patient story, a local election result, a named scholar's biography), underline ONLY 1-2 short fragments that establish the example, then immediately underline the broader systemic conclusion it illustrates. Do not underline the full narrative arc of the individual case. The individual is evidence; the systemic point is the argument.
 
