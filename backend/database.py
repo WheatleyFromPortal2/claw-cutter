@@ -49,8 +49,10 @@ class Project(Base):
     link_story = Column(Text, nullable=True)
     research_status = Column(String, default="idle")  # idle | running | done | error
     research_error = Column(String, nullable=True)
+    research_log = Column(Text, nullable=True)  # JSON array of log strings
     cut_status = Column(String, default="idle")  # idle | running | done | error
     cut_error = Column(String, nullable=True)
+    cut_log = Column(Text, nullable=True)  # JSON array of log strings
     status = Column(String, default="active")  # active | archived
     created_at = Column(DateTime)
 
@@ -77,6 +79,7 @@ class Card(Base):
     card_text = Column(Text, nullable=True)
     underlined = Column(Text, nullable=True)   # JSON array of underlined phrases
     highlighted = Column(Text, nullable=True)  # JSON array of highlighted phrases
+    full_text_fetched = Column(String, default="no")  # yes | no | unknown
 
     # Workflow status: researched | approved | cut | trashed
     card_status = Column(String, default="researched")

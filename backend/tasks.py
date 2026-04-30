@@ -162,6 +162,23 @@ async def run_cutting_job(job_id: str) -> None:
         db.close()
 
 
+async def _fetch_url_text(url: str) -> str:
+    """Fetch a URL and return extracted plain text (max 8000 chars), empty string on failure."""
+    if not url:
+        return ""
+    try:
+        import httpx, re as _re
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code == 200:
+                raw = resp.text
+                text_no_tags = _re.sub(r"<[^>]+>", " ", raw)
+                return " ".join(text_no_tags.split())[:8000]
+    except Exception:
+        pass
+    return ""
+
+
 async def run_research_job(project_id: str) -> None:
     print(f"[research {project_id[:8]}] started", flush=True)
     db = SessionLocal()
@@ -170,20 +187,30 @@ async def run_research_job(project_id: str) -> None:
         if not project:
             return
 
-        # Gather real search results if Brave API key is configured
+        research_log = []
+
+        def _log(msg: str):
+            research_log.append(msg)
+            project.research_log = json.dumps(research_log)
+            db.commit()
+            print(f"[research {project_id[:8]}] {msg}", flush=True)
+
+        # Gather real search results if search API key is configured
         search_results = []
         if search_enabled():
+            _log("Generating search queries…")
             queries = await _generate_search_queries(
                 project.topic or "", project.description or ""
             )
             for q in queries:
+                _log(f"Searching: {q}")
                 hits = await web_search(q, count=5)
                 search_results.extend(hits)
-            print(
-                f"[research {project_id[:8]}] search: {len(queries)} queries → {len(search_results)} results",
-                flush=True,
-            )
+            _log(f"Found {len(search_results)} search results across {len(queries)} queries")
+        else:
+            _log("No search API configured — using AI training knowledge")
 
+        _log("Asking AI to generate article suggestions…")
         result, model_id, tokens = await research_project(
             project.name or "",
             project.topic or "",
@@ -199,34 +226,57 @@ async def run_research_job(project_id: str) -> None:
             return
 
         project.link_story = result.get("link_story", "")
-        project.research_status = "done"
         db.commit()
+
+        articles = result.get("articles", [])
+        _log(f"AI returned {len(articles)} article suggestions")
 
         project_tag = f"proj::{project.name}"
 
-        for art in result.get("articles", []):
+        for idx, art in enumerate(articles):
             import uuid
+            url = art.get("url") or ""
+
+            _log(f"Processing article {idx + 1}/{len(articles)}: {(art.get('title') or '')[:60] or url[:60]}")
+
+            # Attempt to fetch full article text from URL
+            full_text_fetched = "no"
+            card_text = ""
+            if url:
+                _log(f"  Fetching article text from URL…")
+                fetched = await _fetch_url_text(url)
+                if fetched:
+                    card_text = fetched
+                    full_text_fetched = "yes"
+                    _log(f"  Fetched {len(fetched)} chars of article text")
+                else:
+                    _log(f"  Could not fetch article text (access restricted or error)")
+            else:
+                _log(f"  No URL available — article text will be empty")
+
             card = Card(
                 id=str(uuid.uuid4()),
                 project_id=project_id,
-                tag=art.get("tag", ""),
-                author=art.get("author", ""),
-                author_qualifications=art.get("author_qualifications", ""),
-                date=art.get("date", ""),
-                title=art.get("title", ""),
-                publisher=art.get("publisher", ""),
-                url=art.get("url", ""),
-                initials=art.get("initials", ""),
+                tag=art.get("tag") or "",
+                author=art.get("author"),
+                author_qualifications=art.get("author_qualifications"),
+                date=art.get("date"),
+                title=art.get("title"),
+                publisher=art.get("publisher"),
+                url=url,
+                initials=art.get("initials"),
                 topic=project.topic or "",
                 tags=json.dumps([project_tag]),
-                card_text=art.get("excerpt", ""),
+                card_text=card_text,
+                full_text_fetched=full_text_fetched,
                 card_status="researched",
                 created_at=datetime.utcnow(),
             )
             db.add(card)
 
+        project.research_status = "done"
         db.commit()
-        print(f"[research {project_id[:8]}] done — {len(result.get('articles', []))} cards created", flush=True)
+        _log(f"Research complete — {len(articles)} cards created")
 
     except Exception as exc:
         try:
@@ -260,9 +310,20 @@ async def run_project_cut_job(project_id: str) -> None:
             db.commit()
             return
 
-        prompts = get_prompts()
+        cut_log = []
 
-        for card in approved:
+        def _log(msg: str):
+            cut_log.append(msg)
+            project.cut_log = json.dumps(cut_log)
+            db.commit()
+            print(f"[cut {project_id[:8]}] {msg}", flush=True)
+
+        prompts = get_prompts()
+        _log(f"Cutting {len(approved)} approved cards…")
+
+        for idx, card in enumerate(approved):
+            tag_short = (card.tag or card.title or "Untitled")[:60]
+            _log(f"Cutting card {idx + 1}/{len(approved)}: {tag_short}")
             card_dict = {
                 "tag": card.tag or "",
                 "author": card.author or "",
@@ -281,15 +342,16 @@ async def run_project_cut_job(project_id: str) -> None:
             record_tokens(model_id, ul_tokens.get("input", 0) + ul_tokens.get("output", 0))
             record_tokens(model_id, hl_tokens.get("input", 0) + hl_tokens.get("output", 0))
 
-            card.underlined = json.dumps(ul_result.get("underlined", []))
-            card.highlighted = json.dumps(hl_result.get("highlighted", []))
+            ul_phrases = ul_result.get("underlined", [])
+            hl_phrases = hl_result.get("highlighted", [])
+            card.underlined = json.dumps(ul_phrases)
+            card.highlighted = json.dumps(hl_phrases)
             card.card_status = "cut"
             card.updated_at = datetime.utcnow()
-            db.commit()
+            _log(f"  → {len(ul_phrases)} underlines, {len(hl_phrases)} highlights")
 
         project.cut_status = "done"
-        db.commit()
-        print(f"[cut {project_id[:8]}] done — {len(approved)} cards cut", flush=True)
+        _log(f"Cut complete — {len(approved)} cards done")
 
     except Exception as exc:
         try:

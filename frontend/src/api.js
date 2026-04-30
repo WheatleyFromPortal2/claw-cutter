@@ -76,6 +76,19 @@ export const startResearch = (id) =>
 export const startProjectCut = (id) =>
   fetch(`${BASE}/projects/${id}/cut`, { method: "POST", headers: headers() });
 
+export const approveAllCards = (id) =>
+  fetch(`${BASE}/projects/${id}/approve-all`, { method: "POST", headers: headers() });
+
+export const trashUnapprovedCards = (id) =>
+  fetch(`${BASE}/projects/${id}/trash-unapproved`, { method: "POST", headers: headers() });
+
+export const addArticleByUrl = (projectId, url) =>
+  fetch(`${BASE}/projects/${projectId}/add-article`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ url }),
+  });
+
 // ── Cards ──────────────────────────────────────────────────────────────────
 
 export const listProjectCards = (projectId, { cardStatus, q } = {}) => {
@@ -108,6 +121,20 @@ export const restoreCard = (id) =>
 
 export const generateCite = (id, articleText) =>
   fetch(`${BASE}/cards/${id}/cite`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ article_text: articleText }),
+  });
+
+export const populateCiteFromCreator = (id, citeText) =>
+  fetch(`${BASE}/cards/${id}/cite-creator`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ cite_text: citeText }),
+  });
+
+export const populateArticleText = (id, articleText) =>
+  fetch(`${BASE}/cards/${id}/populate-text`, {
     method: "POST",
     headers: jsonHeaders(),
     body: JSON.stringify({ article_text: articleText }),

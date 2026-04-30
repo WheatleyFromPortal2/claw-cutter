@@ -58,9 +58,32 @@ def _load_tokens() -> tuple[set[str], set[str]]:
     return admin_tokens, user_tokens
 
 
+def _migrate_db():
+    """Add new columns to existing tables if they don't exist (SQLite compatible)."""
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        existing_project_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(projects)"))}
+        for col, definition in [
+            ("research_log", "TEXT"),
+            ("cut_log", "TEXT"),
+        ]:
+            if col not in existing_project_cols:
+                conn.execute(text(f"ALTER TABLE projects ADD COLUMN {col} {definition}"))
+
+        existing_card_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(cards)"))}
+        for col, definition in [
+            ("full_text_fetched", "TEXT DEFAULT 'no'"),
+        ]:
+            if col not in existing_card_cols:
+                conn.execute(text(f"ALTER TABLE cards ADD COLUMN {col} {definition}"))
+
+        conn.commit()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    _migrate_db()
     model_router.start_watching()
 
     db = SessionLocal()
@@ -368,6 +391,18 @@ class ProjectCreate(BaseModel):
 
 def _project_out(p: Project, db: Session) -> dict:
     card_count = db.query(Card).filter(Card.project_id == p.id, Card.card_status != "trashed").count()
+    research_log = []
+    if p.research_log:
+        try:
+            research_log = json.loads(p.research_log)
+        except Exception:
+            pass
+    cut_log = []
+    if p.cut_log:
+        try:
+            cut_log = json.loads(p.cut_log)
+        except Exception:
+            pass
     return {
         "id": p.id,
         "name": p.name,
@@ -376,8 +411,10 @@ def _project_out(p: Project, db: Session) -> dict:
         "link_story": p.link_story or "",
         "research_status": p.research_status or "idle",
         "research_error": p.research_error or "",
+        "research_log": research_log,
         "cut_status": p.cut_status or "idle",
         "cut_error": p.cut_error or "",
+        "cut_log": cut_log,
         "status": p.status or "active",
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "card_count": card_count,
@@ -515,20 +552,21 @@ def _card_out(c: Card) -> dict:
     return {
         "id": c.id,
         "project_id": c.project_id or "",
-        "tag": c.tag or "",
-        "author": c.author or "",
-        "author_qualifications": c.author_qualifications or "",
-        "date": c.date or "",
-        "title": c.title or "",
-        "publisher": c.publisher or "",
+        "tag": c.tag,
+        "author": c.author,
+        "author_qualifications": c.author_qualifications,
+        "date": c.date,
+        "title": c.title,
+        "publisher": c.publisher,
         "url": c.url or "",
-        "initials": c.initials or "",
+        "initials": c.initials,
         "topic": c.topic or "",
         "tags": json.loads(c.tags) if c.tags else [],
         "card_text": c.card_text or "",
         "underlined": json.loads(c.underlined) if c.underlined else [],
         "highlighted": json.loads(c.highlighted) if c.highlighted else [],
         "card_status": c.card_status or "researched",
+        "full_text_fetched": c.full_text_fetched or "no",
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
@@ -682,6 +720,155 @@ def restore_card(
     card.updated_at = datetime.utcnow()
     db.commit()
     return {"id": card.id, "card_status": card.card_status}
+
+
+@app.post("/api/projects/{project_id}/approve-all")
+def approve_all_cards(
+    project_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    cards = db.query(Card).filter(
+        Card.project_id == project_id,
+        Card.card_status == "researched",
+    ).all()
+    now = datetime.utcnow()
+    for card in cards:
+        card.card_status = "approved"
+        card.updated_at = now
+    db.commit()
+    return {"approved": len(cards)}
+
+
+@app.post("/api/projects/{project_id}/trash-unapproved")
+def trash_unapproved_cards(
+    project_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    cards = db.query(Card).filter(
+        Card.project_id == project_id,
+        Card.card_status == "researched",
+    ).all()
+    now = datetime.utcnow()
+    for card in cards:
+        card.card_status = "trashed"
+        card.updated_at = now
+    db.commit()
+    return {"trashed": len(cards)}
+
+
+class AddArticleRequest(BaseModel):
+    url: str
+
+
+@app.post("/api/projects/{project_id}/add-article")
+async def add_article_by_url(
+    project_id: str,
+    body: AddArticleRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    from ai import generate_cite
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    url = body.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+
+    article_text = ""
+    full_text_fetched = "no"
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code == 200:
+                import re as _re
+                raw = resp.text
+                text_no_tags = _re.sub(r"<[^>]+>", " ", raw)
+                article_text = " ".join(text_no_tags.split())[:8000]
+                full_text_fetched = "yes"
+    except Exception:
+        pass
+
+    cite: dict = {}
+    if article_text:
+        cite, _, _ = await generate_cite(article_text)
+
+    card = Card(
+        id=str(uuid.uuid4()),
+        project_id=project_id,
+        tag=cite.get("tag") or "",
+        author=cite.get("author"),
+        author_qualifications=cite.get("author_qualifications"),
+        date=cite.get("date"),
+        title=cite.get("title"),
+        publisher=cite.get("publisher"),
+        url=url,
+        initials=cite.get("initials"),
+        topic=project.topic or "",
+        tags=json.dumps([]),
+        card_text=article_text if full_text_fetched == "yes" else "",
+        full_text_fetched=full_text_fetched,
+        card_status="approved",
+        created_at=datetime.utcnow(),
+    )
+    db.add(card)
+    db.commit()
+    return _card_out(card)
+
+
+class CiteCreatorRequest(BaseModel):
+    cite_text: str
+
+
+@app.post("/api/cards/{card_id}/cite-creator")
+async def populate_cite_from_creator(
+    card_id: str,
+    body: CiteCreatorRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    from ai import parse_cite_creator
+    card = db.query(Card).filter(Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+
+    cite, model_id, tokens = await parse_cite_creator(body.cite_text)
+    if cite.get("error"):
+        raise HTTPException(status_code=500, detail=cite["error"])
+
+    for field in ("author", "author_qualifications", "date", "title", "publisher", "url", "initials"):
+        val = cite.get(field)
+        setattr(card, field, val)
+
+    card.updated_at = datetime.utcnow()
+    db.commit()
+    return _card_out(card)
+
+
+class PopulateArticleTextRequest(BaseModel):
+    article_text: str
+
+
+@app.post("/api/cards/{card_id}/populate-text")
+def populate_article_text(
+    card_id: str,
+    body: PopulateArticleTextRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    card = db.query(Card).filter(Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+
+    card.card_text = body.article_text
+    card.full_text_fetched = "yes"
+    card.updated_at = datetime.utcnow()
+    db.commit()
+    return _card_out(card)
 
 
 class CiteRequest(BaseModel):
@@ -908,6 +1095,17 @@ def status_page(db: Session = Depends(get_db)):
 </html>"""
     return HTMLResponse(content=html)
 
+
+# Serve favicon from resources directory if present
+_resources_dir = Path(__file__).parent / "resources"
+_resources_dir.mkdir(exist_ok=True)
+
+@app.get("/favicon.png")
+def serve_favicon():
+    favicon_path = _resources_dir / "favicon.png"
+    if favicon_path.exists():
+        return FileResponse(str(favicon_path), media_type="image/png")
+    raise HTTPException(status_code=404, detail="favicon.png not found")
 
 # Serve built frontend in production
 frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"

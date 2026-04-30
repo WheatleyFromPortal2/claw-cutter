@@ -5,10 +5,13 @@ import {
   startResearch,
   startProjectCut,
   approveCard,
+  approveAllCards,
   trashCard,
+  trashUnapprovedCards,
   restoreCard,
   exportCards,
   updateProject,
+  addArticleByUrl,
 } from "./api.js";
 
 const TAB_LABELS = {
@@ -18,13 +21,18 @@ const TAB_LABELS = {
   trashed: "Trash",
 };
 
-function CardRow({ card, onApprove, onTrash, onRestore, onSelect, selected, showSelect }) {
+function CardRow({ card, tab, onApprove, onTrash, onRestore, onSelect, selected, showSelect }) {
   const statusColor = {
     researched: "var(--text-muted)",
     approved: "var(--warning)",
     cut: "var(--success)",
     trashed: "#f87171",
   };
+
+  // In the Researched tab, show article title instead of tag
+  const displayTitle = tab === "researched"
+    ? (card.title || card.tag || "Untitled")
+    : (card.tag || card.title || "Untitled");
 
   return (
     <div className={`res-card-row ${selected ? "selected" : ""}`} onClick={() => onSelect(card.id)}>
@@ -38,7 +46,7 @@ function CardRow({ card, onApprove, onTrash, onRestore, onSelect, selected, show
         />
       )}
       <div className="res-card-body">
-        <div className="res-card-tag">{card.tag || "Untitled"}</div>
+        <div className="res-card-tag">{displayTitle}</div>
         <div className="res-card-cite">
           {[card.initials, card.date ? card.date.slice(0, 4) : "", card.author, card.publisher]
             .filter(Boolean)
@@ -46,6 +54,9 @@ function CardRow({ card, onApprove, onTrash, onRestore, onSelect, selected, show
         </div>
       </div>
       <div className="res-card-actions" onClick={(e) => e.stopPropagation()}>
+        {card.full_text_fetched === "no" && (
+          <span title="Article text not fetched" className="res-flag-icon">⚠</span>
+        )}
         <span className="res-status-dot" style={{ background: statusColor[card.card_status] }} title={card.card_status} />
         {card.card_status === "researched" && (
           <>
@@ -60,6 +71,56 @@ function CardRow({ card, onApprove, onTrash, onRestore, onSelect, selected, show
           <button className="res-btn approve" onClick={() => onRestore(card.id)} title="Restore">↩</button>
         )}
       </div>
+    </div>
+  );
+}
+
+function AddArticlePanel({ projectId, onAdded }) {
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleAdd = async () => {
+    const trimmed = url.trim();
+    if (!trimmed) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await addArticleByUrl(projectId, trimmed);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      const card = await res.json();
+      setUrl("");
+      onAdded(card);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="add-article-panel">
+      <div className="add-article-row">
+        <input
+          className="pd-search"
+          placeholder="Paste article URL to add to Approved…"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !loading && handleAdd()}
+        />
+        <button
+          className="btn-primary"
+          style={{ fontSize: 13, padding: "6px 14px", whiteSpace: "nowrap" }}
+          onClick={handleAdd}
+          disabled={!url.trim() || loading}
+        >
+          {loading ? "Adding…" : "Add Article"}
+        </button>
+      </div>
+      {error && <div className="error-box" style={{ marginTop: 6 }}>{error}</div>}
     </div>
   );
 }
@@ -137,6 +198,8 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
       const updated = await res.json();
       setProject((p) => ({ ...p, ...updated }));
       setEditing(false);
+      // Reload cards in case search criteria changed
+      await loadCards();
     } catch (e) {
       setError(e.message);
     } finally {
@@ -151,7 +214,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
       alert("Research failed: " + (err.detail || res.status));
       return;
     }
-    setProject((p) => ({ ...p, research_status: "running" }));
+    setProject((p) => ({ ...p, research_status: "running", research_log: [] }));
   };
 
   const handleCut = async () => {
@@ -161,7 +224,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
       alert("Cut failed: " + (err.detail || res.status));
       return;
     }
-    setProject((p) => ({ ...p, cut_status: "running" }));
+    setProject((p) => ({ ...p, cut_status: "running", cut_log: [] }));
   };
 
   const handleApprove = async (id) => {
@@ -170,10 +233,23 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
     if (tab === "researched") setCards((prev) => prev.filter((c) => c.id !== id));
   };
 
+  const handleApproveAll = async () => {
+    const res = await approveAllCards(projectId);
+    if (!res.ok) return;
+    await loadCards();
+  };
+
   const handleTrash = async (id) => {
     await trashCard(id);
     setCards((prev) => prev.filter((c) => c.id !== id));
     setSelected((s) => { const n = new Set(s); n.delete(id); return n; });
+  };
+
+  const handleTrashUnapproved = async () => {
+    if (!window.confirm("Trash all cards in the Researched tab?")) return;
+    const res = await trashUnapprovedCards(projectId);
+    if (!res.ok) return;
+    await loadCards();
   };
 
   const handleRestore = async (id) => {
@@ -202,6 +278,14 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
     }
   };
 
+  const handleArticleAdded = (card) => {
+    if (tab === "approved") {
+      setCards((prev) => [...prev, card]);
+    } else {
+      setTab("approved");
+    }
+  };
+
   if (error) return (
     <div className="project-detail">
       <button className="btn-back" onClick={onBack}>← Projects</button>
@@ -218,6 +302,8 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
 
   const isResearching = project.research_status === "running";
   const isCutting = project.cut_status === "running";
+  const researchLog = project.research_log || [];
+  const cutLog = project.cut_log || [];
 
   return (
     <div className="project-detail">
@@ -257,9 +343,32 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
       {project.cut_status === "error" && (
         <div className="error-box">Cut error: {project.cut_error}</div>
       )}
-      {(isResearching || isCutting) && (
-        <div className="info-box">
-          {isResearching ? "AI is researching articles for this project…" : "AI is cutting approved cards…"}
+
+      {/* Live research log */}
+      {isResearching && (
+        <div className="job-log-box">
+          <div className="job-log-title">Research Progress</div>
+          <div className="job-log-entries">
+            {researchLog.length === 0
+              ? <div className="job-log-entry muted">Starting research…</div>
+              : researchLog.map((line, i) => (
+                  <div key={i} className={`job-log-entry ${i === researchLog.length - 1 ? "active" : ""}`}>{line}</div>
+                ))}
+          </div>
+        </div>
+      )}
+
+      {/* Live cut log */}
+      {isCutting && (
+        <div className="job-log-box">
+          <div className="job-log-title">Cut Progress</div>
+          <div className="job-log-entries">
+            {cutLog.length === 0
+              ? <div className="job-log-entry muted">Starting cut…</div>
+              : cutLog.map((line, i) => (
+                  <div key={i} className={`job-log-entry ${i === cutLog.length - 1 ? "active" : ""}`}>{line}</div>
+                ))}
+          </div>
         </div>
       )}
 
@@ -308,7 +417,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
         ))}
       </div>
 
-      {/* Search + export */}
+      {/* Search + export + bulk actions */}
       <div className="pd-toolbar">
         <input
           className="pd-search"
@@ -316,6 +425,16 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        {tab === "researched" && cards.length > 0 && (
+          <>
+            <button className="res-btn approve" style={{ padding: "5px 12px", fontSize: 12 }} onClick={handleApproveAll}>
+              Approve All
+            </button>
+            <button className="res-btn trash" style={{ padding: "5px 12px", fontSize: 12 }} onClick={handleTrashUnapproved}>
+              Trash All
+            </button>
+          </>
+        )}
         {(tab === "cut" || tab === "approved") && (
           <button
             className="btn-export"
@@ -326,6 +445,11 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
           </button>
         )}
       </div>
+
+      {/* Add article by URL (Approved tab) */}
+      {tab === "approved" && (
+        <AddArticlePanel projectId={projectId} onAdded={handleArticleAdded} />
+      )}
 
       {/* Card list */}
       {cards.length === 0 ? (
@@ -344,6 +468,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
             <CardRow
               key={card.id}
               card={card}
+              tab={tab}
               onApprove={handleApprove}
               onTrash={handleTrash}
               onRestore={handleRestore}

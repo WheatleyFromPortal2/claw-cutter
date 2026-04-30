@@ -878,7 +878,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 20px;
-  max-width: 860px;
 }
 
 .projects-header {
@@ -992,7 +991,6 @@ body {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 900px;
 }
 
 .pd-header {
@@ -1291,12 +1289,123 @@ body {
   box-shadow: 0 4px 24px rgba(0,0,0,0.4);
 }
 
+/* ── Job log box (research/cut progress) ── */
+.job-log-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.job-log-title {
+  padding: 8px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border);
+}
+
+.job-log-entries {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 8px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.job-log-entry {
+  padding: 3px 14px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.job-log-entry.active {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.job-log-entry.muted {
+  font-style: italic;
+}
+
+/* ── Add article panel ── */
+.add-article-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.add-article-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ── Flag icon in card rows ── */
+.res-flag-icon {
+  color: var(--warning);
+  font-size: 12px;
+  cursor: default;
+}
+
+/* ── Cut preview ── */
+.cv-cut-preview {
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.cv-cut-cite {
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  font-style: italic;
+}
+
+/* ── Unknown field ── */
+.cv-field-unknown {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--warning);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.cv-field-flag {
+  font-style: normal;
+}
+
+/* ── Flag badge in header ── */
+.cv-flag-badge {
+  font-size: 11px;
+  color: var(--warning);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 4px;
+  padding: 2px 7px;
+  background: rgba(245, 158, 11, 0.08);
+}
+
+/* ── Flag inline (small) ── */
+.cv-flag-inline {
+  color: var(--warning);
+  font-size: 11px;
+  font-weight: 500;
+  margin-left: 4px;
+}
+
 /* ── Card viewer ── */
 .card-viewer {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 820px;
 }
 
 .cv-header {

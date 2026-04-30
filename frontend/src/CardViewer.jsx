@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getCard, updateCard, generateCite, approveCard, trashCard, restoreCard } from "./api.js";
+import { getCard, updateCard, populateCiteFromCreator, populateArticleText, approveCard, trashCard, restoreCard } from "./api.js";
 
 function CardTextRenderer({ text, underlined = [], highlighted = [] }) {
   if (!text) return null;
@@ -58,14 +58,35 @@ const FIELDS = [
   { key: "topic", label: "Topic" },
 ];
 
+function FieldValue({ fieldKey, value, card }) {
+  if (value === null || value === undefined) {
+    return (
+      <span className="cv-field-unknown">
+        <span className="cv-field-flag" title="Not known with confidence">⚠</span>
+        Unknown
+      </span>
+    );
+  }
+  if (fieldKey === "url" && value) {
+    return <a href={value} target="_blank" rel="noreferrer" className="cv-link">{value}</a>;
+  }
+  if (!value) {
+    return <em style={{ color: "var(--text-muted)" }}>—</em>;
+  }
+  return <span>{value}</span>;
+}
+
 export default function CardViewer({ cardId, onBack }) {
   const [card, setCard] = useState(null);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({});
   const [citeText, setCiteText] = useState("");
   const [showCiteInput, setShowCiteInput] = useState(false);
+  const [showArticleInput, setShowArticleInput] = useState(false);
+  const [articleText, setArticleText] = useState("");
   const [saving, setSaving] = useState(false);
-  const [generatingCite, setGeneratingCite] = useState(false);
+  const [populatingCite, setPopulatingCite] = useState(false);
+  const [populatingText, setPopulatingText] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -109,11 +130,11 @@ export default function CardViewer({ cardId, onBack }) {
     }
   };
 
-  const handleGenerateCite = async () => {
+  const handlePopulateCite = async () => {
     if (!citeText.trim()) return;
-    setGeneratingCite(true);
+    setPopulatingCite(true);
     try {
-      const res = await generateCite(cardId, citeText);
+      const res = await populateCiteFromCreator(cardId, citeText);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(err.detail || `HTTP ${res.status}`);
@@ -126,7 +147,28 @@ export default function CardViewer({ cardId, onBack }) {
     } catch (e) {
       setError(e.message);
     } finally {
-      setGeneratingCite(false);
+      setPopulatingCite(false);
+    }
+  };
+
+  const handlePopulateText = async () => {
+    if (!articleText.trim()) return;
+    setPopulatingText(true);
+    try {
+      const res = await populateArticleText(cardId, articleText);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      const updated = await res.json();
+      setCard(updated);
+      setForm(updated);
+      setArticleText("");
+      setShowArticleInput(false);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setPopulatingText(false);
     }
   };
 
@@ -158,8 +200,8 @@ export default function CardViewer({ cardId, onBack }) {
     </div>
   );
 
-  const cite = [card.initials, card.date?.slice(0, 4), card.author, card.author_qualifications, card.date, card.title ? `"${card.title}"` : "", card.publisher, card.url]
-    .filter(Boolean).join(" · ");
+  const isCut = card.card_status === "cut";
+  const hasFullText = card.full_text_fetched === "yes";
 
   return (
     <div className="card-viewer">
@@ -167,6 +209,9 @@ export default function CardViewer({ cardId, onBack }) {
         <button className="btn-back" onClick={onBack}>← Back</button>
         <div className="cv-header-actions">
           <span className={`status-badge status-${card.card_status}`}>{card.card_status}</span>
+          {!hasFullText && (
+            <span className="cv-flag-badge" title="Article text was not fetched from the source">⚠ No full text</span>
+          )}
           {card.card_status === "researched" && (
             <button className="res-btn approve" onClick={() => handleStatusAction("approve")}>Approve</button>
           )}
@@ -177,7 +222,7 @@ export default function CardViewer({ cardId, onBack }) {
             <button className="res-btn approve" onClick={() => handleStatusAction("restore")}>Restore</button>
           )}
           <button
-            className={`btn-secondary ${editing ? "" : ""}`}
+            className="btn-secondary"
             onClick={() => { if (editing) handleSave(); else setEditing(true); }}
             disabled={saving}
           >
@@ -193,27 +238,60 @@ export default function CardViewer({ cardId, onBack }) {
 
       {error && <div className="error-box">{error}</div>}
 
-      {/* Cite generation */}
+      {/* Cite Creator input */}
       <div className="cv-cite-section">
         <button className="advanced-toggle" onClick={() => setShowCiteInput((v) => !v)}>
-          {showCiteInput ? "▲" : "▼"} Generate cite from article text
+          {showCiteInput ? "▲" : "▼"} Populate cite from Cite Creator
         </button>
         {showCiteInput && (
           <div className="cv-cite-input">
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>
+              Paste a citation in Verbatim Cite Creator format (e.g. <em>Smith 23 (John Smith, Professor, Jan 2023, "Title," Publisher, URL)</em>)
+            </div>
             <textarea
               className="prompt-textarea"
-              placeholder="Paste article text or metadata here…"
-              rows={6}
+              placeholder="Paste Verbatim Cite Creator formatted citation here…"
+              rows={4}
               value={citeText}
               onChange={(e) => setCiteText(e.target.value)}
             />
             <button
               className="btn-primary"
               style={{ fontSize: 13, padding: "6px 16px" }}
-              onClick={handleGenerateCite}
-              disabled={!citeText.trim() || generatingCite}
+              onClick={handlePopulateCite}
+              disabled={!citeText.trim() || populatingCite}
             >
-              {generatingCite ? "Generating…" : "Generate Cite"}
+              {populatingCite ? "Populating…" : "Populate Fields"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Populate article text */}
+      <div className="cv-cite-section">
+        <button className="advanced-toggle" onClick={() => setShowArticleInput((v) => !v)}>
+          {showArticleInput ? "▲" : "▼"} Populate article text
+          {!hasFullText && <span className="cv-flag-inline"> ⚠ not fetched</span>}
+        </button>
+        {showArticleInput && (
+          <div className="cv-cite-input">
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>
+              Paste the full article text here to use as the card body.
+            </div>
+            <textarea
+              className="prompt-textarea"
+              placeholder="Paste article text here…"
+              rows={8}
+              value={articleText}
+              onChange={(e) => setArticleText(e.target.value)}
+            />
+            <button
+              className="btn-primary"
+              style={{ fontSize: 13, padding: "6px 16px" }}
+              onClick={handlePopulateText}
+              disabled={!articleText.trim() || populatingText}
+            >
+              {populatingText ? "Saving…" : "Save Article Text"}
             </button>
           </div>
         )}
@@ -241,24 +319,47 @@ export default function CardViewer({ cardId, onBack }) {
               )
             ) : (
               <span className="cv-field-value">
-                {key === "url" && card[key]
-                  ? <a href={card[key]} target="_blank" rel="noreferrer" className="cv-link">{card[key]}</a>
-                  : (card[key] || <em style={{ color: "var(--text-muted)" }}>—</em>)}
+                <FieldValue fieldKey={key} value={card[key]} card={card} />
               </span>
             )}
           </div>
         ))}
       </div>
 
-      {/* Card text */}
+      {/* Cut card preview (only show when cut) */}
+      {isCut && (card.underlined?.length > 0 || card.highlighted?.length > 0) && (
+        <div className="cv-cut-preview">
+          <div className="cv-card-text-label">Cut Card Preview</div>
+          <div className="cv-cut-cite">
+            {[card.initials, card.date?.slice(0, 4), card.author, card.author_qualifications, card.title ? `"${card.title}"` : "", card.publisher]
+              .filter(Boolean).join(" · ")}
+          </div>
+          <div className="cv-card-text-body">
+            {card.card_text
+              ? <CardTextRenderer
+                  text={card.card_text}
+                  underlined={card.underlined || []}
+                  highlighted={card.highlighted || []}
+                />
+              : <em style={{ color: "var(--text-muted)" }}>No card text available to preview.</em>
+            }
+          </div>
+        </div>
+      )}
+
+      {/* Card text (raw) */}
       <div className="cv-card-text">
-        <div className="cv-card-text-label">Card Text</div>
+        <div className="cv-card-text-label">
+          Card Text
+          {!hasFullText && <span className="cv-flag-inline"> ⚠ article text not fetched</span>}
+        </div>
         {editing ? (
           <textarea
             className="prompt-textarea"
             rows={12}
             value={form.card_text || ""}
             onChange={(e) => setForm((f) => ({ ...f, card_text: e.target.value }))}
+            style={{ margin: "10px 14px", width: "calc(100% - 28px)" }}
           />
         ) : (
           <div className="cv-card-text-body">
@@ -268,7 +369,7 @@ export default function CardViewer({ cardId, onBack }) {
                   underlined={card.underlined || []}
                   highlighted={card.highlighted || []}
                 />
-              : <em style={{ color: "var(--text-muted)" }}>No card text.</em>
+              : <em style={{ color: "var(--text-muted)" }}>No card text. Use "Populate article text" to add it.</em>
             }
           </div>
         )}
