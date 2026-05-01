@@ -129,19 +129,21 @@ _RESEARCH_SYSTEM = """You are an expert policy debate researcher. Given a projec
 
 2. Generate 8 specific article/source suggestions — one per causal link or key warrant — that would provide evidence for this argument. Focus on real, citable academic papers, government reports, and credible journalism from your training knowledge.
 
+Use null (not empty string or placeholder text) for any cite field you are not confident about. Do not invent author names or qualifications.
+
 Return valid JSON only (no markdown fences):
 {
   "link_story": "...",
   "articles": [
     {
       "tag": "one- or two-sentence debate tag stating what the card proves",
-      "author": "Last, First",
-      "author_qualifications": "professional role and institution",
-      "date": "YYYY",
-      "title": "full article or paper title",
-      "publisher": "journal, website, or publishing institution",
+      "author": "Last, First, or null if uncertain",
+      "author_qualifications": "professional role and institution, or null if uncertain",
+      "date": "YYYY, or null if uncertain",
+      "title": "full article or paper title, or null if uncertain",
+      "publisher": "journal, website, or publishing institution, or null if uncertain",
       "url": "",
-      "initials": "FL",
+      "initials": "FL, or null if uncertain",
       "excerpt": "2-3 sentence passage that forms the body of the card"
     }
   ]
@@ -149,15 +151,38 @@ Return valid JSON only (no markdown fences):
 
 _CITE_SYSTEM = """You are a debate cite formatter. Given article text or metadata, extract the citation information.
 
+Use null (not empty string) for any field you cannot determine with reasonable confidence from the provided text. Only provide a value if you are reasonably sure it is correct.
+
 Return valid JSON only (no markdown fences):
 {
-  "author": "Last, First  (if multiple authors use 'Last et al.')",
-  "author_qualifications": "professional role, title, and institution",
-  "date": "YYYY  or  YYYY/MM  or  YYYY/MM/DD",
-  "title": "article or paper title",
-  "publisher": "journal, website, or publication name",
+  "author": "Last, First  (if multiple authors use 'Last et al.'), or null if not found",
+  "author_qualifications": "professional role, title, and institution, or null if not found",
+  "date": "YYYY  or  YYYY/MM  or  YYYY/MM/DD, or null if not found",
+  "title": "article or paper title, or null if not found",
+  "publisher": "journal, website, or publication name, or null if not found",
   "url": "URL if present in the text, else empty string",
-  "initials": "cite initials — first letter of first name + first letter of last name, e.g. 'JD'"
+  "initials": "cite initials — first letter of first name + first letter of last name, e.g. 'JD', or null if not found"
+}"""
+
+_VERBATIM_CITE_SYSTEM = """You are a debate cite formatter. Parse a cite formatted in Verbatim Cite Creator format and extract the citation fields.
+
+Verbatim Cite Creator format typically looks like:
+  Initials YY – Full Author Name, qualifications/title, Date, "Title of Article," Publisher. URL.
+
+For example:
+  Smith 24 – John Smith, Professor of Political Science at Harvard University, January 15 2024, "The Impact of AI on Labor Markets," MIT Technology Review. https://example.com/article
+
+Extract each field. Use null for any field you cannot determine with reasonable confidence.
+
+Return valid JSON only (no markdown fences):
+{
+  "author": "Last, First  (e.g. 'Smith, John'), or null if not found",
+  "author_qualifications": "professional role, title, and institution, or null if not found",
+  "date": "YYYY  or  YYYY/MM  or  YYYY/MM/DD, or null if not found",
+  "title": "article or paper title (without quotes), or null if not found",
+  "publisher": "journal, website, or publication name, or null if not found",
+  "url": "URL if present, else empty string",
+  "initials": "the initials prefix before the year, e.g. 'Smith', or null if not found"
 }"""
 
 
@@ -173,19 +198,21 @@ _RESEARCH_WITH_SOURCES_SYSTEM = """You are an expert policy debate researcher. G
 
 2. Generate 8 article suggestions grounded in the provided search results. Prefer sources that appear in the search results — use their exact titles and URLs. You may add 1-2 additional suggestions from your training knowledge only if the search results leave key links in the argument unsupported; leave their URL field empty.
 
+Use null (not empty string or placeholder text) for any cite field you are not confident about. Do not invent author names or qualifications.
+
 Return valid JSON only (no markdown fences):
 {
   "link_story": "...",
   "articles": [
     {
       "tag": "one- or two-sentence debate tag stating what the card proves",
-      "author": "Last, First",
-      "author_qualifications": "professional role and institution",
-      "date": "YYYY",
-      "title": "exact title from search results or training knowledge",
-      "publisher": "journal, website, or publishing institution",
+      "author": "Last, First, or null if uncertain",
+      "author_qualifications": "professional role and institution, or null if uncertain",
+      "date": "YYYY, or null if uncertain",
+      "title": "exact title from search results or training knowledge, or null if uncertain",
+      "publisher": "journal, website, or publishing institution, or null if uncertain",
       "url": "exact URL from search results, or empty string if not from search",
-      "initials": "FL",
+      "initials": "FL, or null if uncertain",
       "excerpt": "2-3 sentence passage that forms the body of the card"
     }
   ]
@@ -260,6 +287,79 @@ async def generate_cite(article_text: str) -> tuple[dict, str, dict]:
         return {}, "none", _EMPTY_TOKENS
     except Exception as exc:
         return {"error": str(exc)}, "none", _EMPTY_TOKENS
+
+
+async def parse_verbatim_cite(cite_text: str) -> tuple[dict, str, dict]:
+    """Parse a Verbatim Cite Creator formatted cite string into structured fields."""
+    try:
+        text, model_id, tokens = await router.call(
+            _VERBATIM_CITE_SYSTEM, cite_text[:2000], max_tokens=512
+        )
+        json_match = re.search(r"\{[\s\S]*\}", text)
+        if json_match:
+            return json.loads(json_match.group(0)), model_id, tokens
+        return {}, model_id, tokens
+    except json.JSONDecodeError:
+        return {}, "none", _EMPTY_TOKENS
+    except Exception as exc:
+        return {"error": str(exc)}, "none", _EMPTY_TOKENS
+
+
+async def fetch_article_text(url: str) -> tuple[str, bool]:
+    """Fetch and extract plain text from a URL.
+    Returns (text, has_full_text) where has_full_text is True if meaningful content was retrieved.
+    """
+    import httpx
+    from html.parser import HTMLParser
+
+    class _TextExtractor(HTMLParser):
+        SKIP_TAGS = {"script", "style", "head", "nav", "footer", "header", "aside", "noscript"}
+
+        def __init__(self):
+            super().__init__()
+            self._parts: list[str] = []
+            self._skip = 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag in self.SKIP_TAGS:
+                self._skip += 1
+
+        def handle_endtag(self, tag):
+            if tag in self.SKIP_TAGS and self._skip > 0:
+                self._skip -= 1
+
+        def handle_data(self, data):
+            if self._skip == 0:
+                d = data.strip()
+                if d:
+                    self._parts.append(d)
+
+        def get_text(self) -> str:
+            return " ".join(self._parts)
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (compatible; LionClaw/1.0; +https://lionclaw.app)",
+                    "Accept": "text/html,application/xhtml+xml,*/*",
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            )
+            if resp.status_code != 200:
+                return "", False
+            ct = resp.headers.get("content-type", "")
+            if "html" in ct or "text" in ct:
+                parser = _TextExtractor()
+                parser.feed(resp.text)
+                extracted = parser.get_text()
+                # Consider "full text" if we got a meaningful amount of content
+                has_full = len(extracted) > 400
+                return extracted[:12000], has_full
+            return "", False
+    except Exception:
+        return "", False
 
 
 async def cut_card_with_context(

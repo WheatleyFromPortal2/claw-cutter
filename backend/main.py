@@ -24,13 +24,13 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ai import get_prompts, generate_cite
+from ai import get_prompts, generate_cite, fetch_article_text, parse_verbatim_cite
 from card_export import export_cards_to_docx
 from database import Base, Job, Project, Card, SessionLocal, engine, get_db
 from metrics import get_current_user_count, get_tokens_per_sec, get_uptime_secs, record_user
@@ -58,9 +58,26 @@ def _load_tokens() -> tuple[set[str], set[str]]:
     return admin_tokens, user_tokens
 
 
+def _migrate_db() -> None:
+    from sqlalchemy import text as sa_text
+    stmts = [
+        "ALTER TABLE projects ADD COLUMN research_log TEXT",
+        "ALTER TABLE projects ADD COLUMN cut_log TEXT",
+        "ALTER TABLE cards ADD COLUMN missing_full_text INTEGER DEFAULT 0",
+    ]
+    with engine.connect() as conn:
+        for stmt in stmts:
+            try:
+                conn.execute(sa_text(stmt))
+                conn.commit()
+            except Exception:
+                pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    _migrate_db()
     model_router.start_watching()
 
     db = SessionLocal()
@@ -376,8 +393,10 @@ def _project_out(p: Project, db: Session) -> dict:
         "link_story": p.link_story or "",
         "research_status": p.research_status or "idle",
         "research_error": p.research_error or "",
+        "research_log": json.loads(p.research_log) if p.research_log else [],
         "cut_status": p.cut_status or "idle",
         "cut_error": p.cut_error or "",
+        "cut_log": json.loads(p.cut_log) if p.cut_log else [],
         "status": p.status or "active",
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "card_count": card_count,
@@ -516,19 +535,21 @@ def _card_out(c: Card) -> dict:
         "id": c.id,
         "project_id": c.project_id or "",
         "tag": c.tag or "",
-        "author": c.author or "",
-        "author_qualifications": c.author_qualifications or "",
-        "date": c.date or "",
-        "title": c.title or "",
-        "publisher": c.publisher or "",
+        # Cite fields: None means "unknown with confidence" — preserved as null in JSON
+        "author": c.author if c.author is not None else None,
+        "author_qualifications": c.author_qualifications if c.author_qualifications is not None else None,
+        "date": c.date if c.date is not None else None,
+        "title": c.title if c.title is not None else None,
+        "publisher": c.publisher if c.publisher is not None else None,
         "url": c.url or "",
-        "initials": c.initials or "",
+        "initials": c.initials if c.initials is not None else None,
         "topic": c.topic or "",
         "tags": json.loads(c.tags) if c.tags else [],
         "card_text": c.card_text or "",
         "underlined": json.loads(c.underlined) if c.underlined else [],
         "highlighted": json.loads(c.highlighted) if c.highlighted else [],
         "card_status": c.card_status or "researched",
+        "missing_full_text": bool(c.missing_full_text),
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
@@ -684,8 +705,115 @@ def restore_card(
     return {"id": card.id, "card_status": card.card_status}
 
 
+@app.post("/api/projects/{project_id}/cards/approve-all")
+def approve_all_project_cards(
+    project_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    count = (
+        db.query(Card)
+        .filter(Card.project_id == project_id, Card.card_status == "researched")
+        .update({"card_status": "approved", "updated_at": datetime.utcnow()}, synchronize_session=False)
+    )
+    db.commit()
+    return {"approved": count}
+
+
+@app.post("/api/projects/{project_id}/cards/trash-unapproved")
+def trash_unapproved_project_cards(
+    project_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    count = (
+        db.query(Card)
+        .filter(Card.project_id == project_id, Card.card_status == "researched")
+        .update({"card_status": "trashed", "updated_at": datetime.utcnow()}, synchronize_session=False)
+    )
+    db.commit()
+    return {"trashed": count}
+
+
+class AddFromUrlRequest(BaseModel):
+    url: str
+
+
+@app.post("/api/projects/{project_id}/cards/add-from-url")
+async def add_card_from_url(
+    project_id: str,
+    body: AddFromUrlRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    url = body.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+
+    article_text, has_full_text = await fetch_article_text(url)
+
+    cite_fields: dict = {}
+    if article_text:
+        cite, _, _ = await generate_cite(article_text)
+        cite_fields = cite if not cite.get("error") else {}
+
+    card = Card(
+        id=str(uuid.uuid4()),
+        project_id=project_id,
+        tag=cite_fields.get("title") or "",
+        author=cite_fields.get("author"),
+        author_qualifications=cite_fields.get("author_qualifications"),
+        date=cite_fields.get("date"),
+        title=cite_fields.get("title"),
+        publisher=cite_fields.get("publisher"),
+        url=url,
+        initials=cite_fields.get("initials"),
+        topic=project.topic or "",
+        tags=json.dumps([f"proj::{project.name}"]),
+        card_text=article_text if has_full_text else "",
+        missing_full_text=not has_full_text,
+        card_status="researched",
+        created_at=datetime.utcnow(),
+    )
+    db.add(card)
+    db.commit()
+    return _card_out(card)
+
+
 class CiteRequest(BaseModel):
     article_text: str
+
+
+class VerbatimCiteRequest(BaseModel):
+    cite_text: str
+
+
+@app.post("/api/cards/{card_id}/cite-verbatim")
+async def populate_cite_from_verbatim(
+    card_id: str,
+    body: VerbatimCiteRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    card = db.query(Card).filter(Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+
+    cite, model_id, tokens = await parse_verbatim_cite(body.cite_text)
+    if cite.get("error"):
+        raise HTTPException(status_code=500, detail=cite["error"])
+
+    for field in ("author", "author_qualifications", "date", "title", "publisher", "url", "initials"):
+        val = cite.get(field)
+        setattr(card, field, val)
+
+    card.updated_at = datetime.utcnow()
+    db.commit()
+    return _card_out(card)
 
 
 @app.post("/api/cards/{card_id}/cite")
@@ -907,6 +1035,14 @@ def status_page(db: Session = Depends(get_db)):
 </body>
 </html>"""
     return HTMLResponse(content=html)
+
+
+@app.get("/favicon.png")
+def serve_favicon():
+    path = Path(__file__).parent / "resources" / "favicon.png"
+    if path.exists():
+        return FileResponse(str(path), media_type="image/png")
+    return Response(status_code=404)
 
 
 # Serve built frontend in production

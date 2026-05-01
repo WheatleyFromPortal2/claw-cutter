@@ -9,6 +9,9 @@ import {
   restoreCard,
   exportCards,
   updateProject,
+  approveAllCards,
+  trashUnapprovedCards,
+  addCardFromUrl,
 } from "./api.js";
 
 const TAB_LABELS = {
@@ -18,7 +21,7 @@ const TAB_LABELS = {
   trashed: "Trash",
 };
 
-function CardRow({ card, onApprove, onTrash, onRestore, onSelect, selected, showSelect }) {
+function CardRow({ card, tab, onApprove, onTrash, onRestore, onSelect, onView, selected, showSelect }) {
   const statusColor = {
     researched: "var(--text-muted)",
     approved: "var(--warning)",
@@ -26,8 +29,22 @@ function CardRow({ card, onApprove, onTrash, onRestore, onSelect, selected, show
     trashed: "#f87171",
   };
 
+  // In researched tab: show article title as primary, tag as secondary
+  const primaryTitle = tab === "researched"
+    ? (card.title || card.tag || "Untitled")
+    : (card.tag || card.title || "Untitled");
+
+  const handleRowClick = () => {
+    if (showSelect) {
+      // For approved/cut tabs: click row to view, checkbox to select
+      onView(card.id);
+    } else {
+      onView(card.id);
+    }
+  };
+
   return (
-    <div className={`res-card-row ${selected ? "selected" : ""}`} onClick={() => onSelect(card.id)}>
+    <div className={`res-card-row ${selected ? "selected" : ""}`} onClick={handleRowClick}>
       {showSelect && (
         <input
           type="checkbox"
@@ -38,9 +55,14 @@ function CardRow({ card, onApprove, onTrash, onRestore, onSelect, selected, show
         />
       )}
       <div className="res-card-body">
-        <div className="res-card-tag">{card.tag || "Untitled"}</div>
+        <div className="res-card-tag">
+          {primaryTitle}
+          {card.missing_full_text && (
+            <span className="res-card-missing" title="Full article text not available"> ⚠</span>
+          )}
+        </div>
         <div className="res-card-cite">
-          {[card.initials, card.date ? card.date.slice(0, 4) : "", card.author, card.publisher]
+          {[card.initials, card.date ? card.date.slice(0, 4) : null, card.author, card.publisher]
             .filter(Boolean)
             .join(" · ")}
         </div>
@@ -64,6 +86,36 @@ function CardRow({ card, onApprove, onTrash, onRestore, onSelect, selected, show
   );
 }
 
+function ActivityLog({ entries, running, title }) {
+  const endRef = useRef(null);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [entries?.length]);
+
+  if (!entries || entries.length === 0) return null;
+
+  return (
+    <div className="activity-log">
+      <div className="activity-log-title">
+        {running && <span className="activity-log-spinner" />}
+        {title}
+      </div>
+      <div className="activity-log-list">
+        {entries.map((e, i) => (
+          <div
+            key={i}
+            className={`activity-log-entry ${i === entries.length - 1 ? "latest" : ""}`}
+          >
+            {e.msg}
+          </div>
+        ))}
+        <div ref={endRef} />
+      </div>
+    </div>
+  );
+}
+
 export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
   const [project, setProject] = useState(null);
   const [cards, setCards] = useState([]);
@@ -75,6 +127,9 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({ name: "", topic: "", description: "" });
   const [saving, setSaving] = useState(false);
+  const [addUrlVisible, setAddUrlVisible] = useState(false);
+  const [addUrlValue, setAddUrlValue] = useState("");
+  const [addingUrl, setAddingUrl] = useState(false);
   const pollRef = useRef(null);
 
   const loadProject = useCallback(async () => {
@@ -110,7 +165,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
       pollRef.current = setInterval(async () => {
         await loadProject();
         await loadCards();
-      }, 3000);
+      }, 2000);
     }
     if (!needsPoll && pollRef.current) {
       clearInterval(pollRef.current);
@@ -151,7 +206,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
       alert("Research failed: " + (err.detail || res.status));
       return;
     }
-    setProject((p) => ({ ...p, research_status: "running" }));
+    setProject((p) => ({ ...p, research_status: "running", research_log: [] }));
   };
 
   const handleCut = async () => {
@@ -161,7 +216,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
       alert("Cut failed: " + (err.detail || res.status));
       return;
     }
-    setProject((p) => ({ ...p, cut_status: "running" }));
+    setProject((p) => ({ ...p, cut_status: "running", cut_log: [] }));
   };
 
   const handleApprove = async (id) => {
@@ -179,6 +234,43 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
   const handleRestore = async (id) => {
     await restoreCard(id);
     setCards((prev) => prev.filter((c) => c.id !== id));
+  };
+
+  const handleApproveAll = async () => {
+    if (!window.confirm(`Approve all ${cards.length} researched cards?`)) return;
+    const res = await approveAllCards(projectId);
+    if (res.ok) {
+      await loadCards();
+    }
+  };
+
+  const handleTrashUnapproved = async () => {
+    if (!window.confirm(`Trash all ${cards.length} unapproved cards?`)) return;
+    const res = await trashUnapprovedCards(projectId);
+    if (res.ok) {
+      await loadCards();
+    }
+  };
+
+  const handleAddFromUrl = async () => {
+    const url = addUrlValue.trim();
+    if (!url) return;
+    setAddingUrl(true);
+    try {
+      const res = await addCardFromUrl(projectId, url);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        alert("Failed: " + (err.detail || res.status));
+      } else {
+        setAddUrlValue("");
+        setAddUrlVisible(false);
+        await loadCards();
+      }
+    } catch (e) {
+      alert("Error: " + e.message);
+    } finally {
+      setAddingUrl(false);
+    }
   };
 
   const toggleSelect = (id) => {
@@ -257,10 +349,23 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
       {project.cut_status === "error" && (
         <div className="error-box">Cut error: {project.cut_error}</div>
       )}
-      {(isResearching || isCutting) && (
-        <div className="info-box">
-          {isResearching ? "AI is researching articles for this project…" : "AI is cutting approved cards…"}
-        </div>
+
+      {/* Research log */}
+      {(isResearching || (project.research_log && project.research_log.length > 0 && project.research_status !== "idle")) && (
+        <ActivityLog
+          entries={project.research_log || []}
+          running={isResearching}
+          title="Research Log"
+        />
+      )}
+
+      {/* Cut log */}
+      {(isCutting || (project.cut_log && project.cut_log.length > 0 && project.cut_status !== "idle")) && (
+        <ActivityLog
+          entries={project.cut_log || []}
+          running={isCutting}
+          title="Cut Log"
+        />
       )}
 
       {/* Edit form */}
@@ -308,7 +413,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
         ))}
       </div>
 
-      {/* Search + export */}
+      {/* Search + export + bulk actions */}
       <div className="pd-toolbar">
         <input
           className="pd-search"
@@ -316,6 +421,25 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        {tab === "researched" && cards.length > 0 && (
+          <>
+            <button className="res-btn approve" style={{ padding: "6px 12px", fontSize: 12 }} onClick={handleApproveAll}>
+              Approve All
+            </button>
+            <button className="res-btn trash" style={{ padding: "6px 12px", fontSize: 12 }} onClick={handleTrashUnapproved}>
+              Trash All
+            </button>
+          </>
+        )}
+        {tab === "researched" && (
+          <button
+            className="btn-secondary"
+            style={{ fontSize: 12, padding: "5px 12px", whiteSpace: "nowrap" }}
+            onClick={() => setAddUrlVisible((v) => !v)}
+          >
+            + Add by URL
+          </button>
+        )}
         {(tab === "cut" || tab === "approved") && (
           <button
             className="btn-export"
@@ -326,6 +450,31 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
           </button>
         )}
       </div>
+
+      {/* Add by URL form */}
+      {addUrlVisible && tab === "researched" && (
+        <div className="add-url-form">
+          <input
+            className="add-url-input"
+            placeholder="Paste article URL…"
+            value={addUrlValue}
+            onChange={(e) => setAddUrlValue(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !addingUrl && handleAddFromUrl()}
+            autoFocus
+          />
+          <button
+            className="btn-primary"
+            style={{ fontSize: 13, padding: "6px 16px", whiteSpace: "nowrap" }}
+            onClick={handleAddFromUrl}
+            disabled={!addUrlValue.trim() || addingUrl}
+          >
+            {addingUrl ? "Fetching…" : "Add"}
+          </button>
+          <button className="btn-secondary" style={{ fontSize: 13 }} onClick={() => { setAddUrlVisible(false); setAddUrlValue(""); }}>
+            Cancel
+          </button>
+        </div>
+      )}
 
       {/* Card list */}
       {cards.length === 0 ? (
@@ -344,13 +493,12 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
             <CardRow
               key={card.id}
               card={card}
+              tab={tab}
               onApprove={handleApprove}
               onTrash={handleTrash}
               onRestore={handleRestore}
-              onSelect={(id) => {
-                if (tab === "cut" || tab === "approved") toggleSelect(id);
-                else onSelectCard(id);
-              }}
+              onSelect={toggleSelect}
+              onView={(id) => onSelectCard(id)}
               selected={selected.has(card.id)}
               showSelect={tab === "cut" || tab === "approved"}
             />

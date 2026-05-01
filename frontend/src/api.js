@@ -76,6 +76,19 @@ export const startResearch = (id) =>
 export const startProjectCut = (id) =>
   fetch(`${BASE}/projects/${id}/cut`, { method: "POST", headers: headers() });
 
+export const approveAllCards = (projectId) =>
+  fetch(`${BASE}/projects/${projectId}/cards/approve-all`, { method: "POST", headers: headers() });
+
+export const trashUnapprovedCards = (projectId) =>
+  fetch(`${BASE}/projects/${projectId}/cards/trash-unapproved`, { method: "POST", headers: headers() });
+
+export const addCardFromUrl = (projectId, url) =>
+  fetch(`${BASE}/projects/${projectId}/cards/add-from-url`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ url }),
+  });
+
 // ── Cards ──────────────────────────────────────────────────────────────────
 
 export const listProjectCards = (projectId, { cardStatus, q } = {}) => {
@@ -111,6 +124,13 @@ export const generateCite = (id, articleText) =>
     method: "POST",
     headers: jsonHeaders(),
     body: JSON.stringify({ article_text: articleText }),
+  });
+
+export const populateCiteFromVerbatim = (id, citeText) =>
+  fetch(`${BASE}/cards/${id}/cite-verbatim`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ cite_text: citeText }),
   });
 
 export const exportCards = async (cardIds, hlColor = "cyan") => {

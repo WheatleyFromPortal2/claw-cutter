@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getCard, updateCard, generateCite, approveCard, trashCard, restoreCard } from "./api.js";
+import { getCard, updateCard, populateCiteFromVerbatim, approveCard, trashCard, restoreCard } from "./api.js";
 
 function CardTextRenderer({ text, underlined = [], highlighted = [] }) {
   if (!text) return null;
@@ -58,14 +58,37 @@ const FIELDS = [
   { key: "topic", label: "Topic" },
 ];
 
+// Fields where null means "unknown" (not just empty)
+const CITE_FIELDS = new Set(["author", "author_qualifications", "date", "title", "publisher", "initials"]);
+
+function FieldValue({ fieldKey, value }) {
+  if (fieldKey === "url" && value) {
+    return <a href={value} target="_blank" rel="noreferrer" className="cv-link">{value}</a>;
+  }
+  if (value === null && CITE_FIELDS.has(fieldKey)) {
+    return (
+      <span className="cv-field-unknown">
+        <span>⚠</span> Unknown — use "Populate cite" or edit manually
+      </span>
+    );
+  }
+  if (!value) {
+    return <em style={{ color: "var(--text-muted)" }}>—</em>;
+  }
+  return <span>{value}</span>;
+}
+
 export default function CardViewer({ cardId, onBack }) {
   const [card, setCard] = useState(null);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({});
   const [citeText, setCiteText] = useState("");
   const [showCiteInput, setShowCiteInput] = useState(false);
+  const [showPopulateText, setShowPopulateText] = useState(false);
+  const [populateText, setPopulateText] = useState("");
   const [saving, setSaving] = useState(false);
-  const [generatingCite, setGeneratingCite] = useState(false);
+  const [populatingCite, setPopulatingCite] = useState(false);
+  const [populatingText, setPopulatingText] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -109,11 +132,11 @@ export default function CardViewer({ cardId, onBack }) {
     }
   };
 
-  const handleGenerateCite = async () => {
+  const handlePopulateCite = async () => {
     if (!citeText.trim()) return;
-    setGeneratingCite(true);
+    setPopulatingCite(true);
     try {
-      const res = await generateCite(cardId, citeText);
+      const res = await populateCiteFromVerbatim(cardId, citeText);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(err.detail || `HTTP ${res.status}`);
@@ -126,7 +149,25 @@ export default function CardViewer({ cardId, onBack }) {
     } catch (e) {
       setError(e.message);
     } finally {
-      setGeneratingCite(false);
+      setPopulatingCite(false);
+    }
+  };
+
+  const handlePopulateText = async () => {
+    if (!populateText.trim()) return;
+    setPopulatingText(true);
+    try {
+      const res = await updateCard(cardId, { card_text: populateText });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const updated = await res.json();
+      setCard(updated);
+      setForm(updated);
+      setPopulateText("");
+      setShowPopulateText(false);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setPopulatingText(false);
     }
   };
 
@@ -158,8 +199,7 @@ export default function CardViewer({ cardId, onBack }) {
     </div>
   );
 
-  const cite = [card.initials, card.date?.slice(0, 4), card.author, card.author_qualifications, card.date, card.title ? `"${card.title}"` : "", card.publisher, card.url]
-    .filter(Boolean).join(" · ");
+  const hasUnknownCiteFields = CITE_FIELDS.has && [...CITE_FIELDS].some(f => card[f] === null);
 
   return (
     <div className="card-viewer">
@@ -177,7 +217,7 @@ export default function CardViewer({ cardId, onBack }) {
             <button className="res-btn approve" onClick={() => handleStatusAction("restore")}>Restore</button>
           )}
           <button
-            className={`btn-secondary ${editing ? "" : ""}`}
+            className="btn-secondary"
             onClick={() => { if (editing) handleSave(); else setEditing(true); }}
             disabled={saving}
           >
@@ -193,27 +233,61 @@ export default function CardViewer({ cardId, onBack }) {
 
       {error && <div className="error-box">{error}</div>}
 
-      {/* Cite generation */}
+      {/* Missing full text warning */}
+      {card.missing_full_text && (
+        <div className="missing-text-banner">
+          <span className="missing-text-dot" />
+          Full article text could not be fetched automatically. Use "Populate Article Text" below to paste it in.
+        </div>
+      )}
+
+      {/* Populate cite from Cite Creator */}
       <div className="cv-cite-section">
         <button className="advanced-toggle" onClick={() => setShowCiteInput((v) => !v)}>
-          {showCiteInput ? "▲" : "▼"} Generate cite from article text
+          {showCiteInput ? "▲" : "▼"} Populate cite from Cite Creator
         </button>
         {showCiteInput && (
           <div className="cv-cite-input">
             <textarea
               className="prompt-textarea"
-              placeholder="Paste article text or metadata here…"
-              rows={6}
+              placeholder={'Paste a Verbatim Cite Creator formatted cite here…\nExample: Smith 24 – John Smith, Professor at Harvard, Jan 2024, "Title of Article," Publisher. https://url.com'}
+              rows={4}
               value={citeText}
               onChange={(e) => setCiteText(e.target.value)}
             />
             <button
               className="btn-primary"
               style={{ fontSize: 13, padding: "6px 16px" }}
-              onClick={handleGenerateCite}
-              disabled={!citeText.trim() || generatingCite}
+              onClick={handlePopulateCite}
+              disabled={!citeText.trim() || populatingCite}
             >
-              {generatingCite ? "Generating…" : "Generate Cite"}
+              {populatingCite ? "Populating…" : "Populate Cite Fields"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Populate article text */}
+      <div className="cv-populate-section">
+        <button className="advanced-toggle" onClick={() => setShowPopulateText((v) => !v)}>
+          {showPopulateText ? "▲" : "▼"} Populate article text
+        </button>
+        {showPopulateText && (
+          <div className="cv-populate-input">
+            <textarea
+              className="prompt-textarea"
+              placeholder="Paste the full article text here…"
+              rows={8}
+              value={populateText}
+              onChange={(e) => setPopulateText(e.target.value)}
+            />
+            <button
+              className="btn-primary"
+              style={{ fontSize: 13, padding: "6px 16px" }}
+              onClick={handlePopulateText}
+              disabled={!populateText.trim() || populatingText}
+            >
+              {populatingText ? "Saving…" : "Set Article Text"}
             </button>
           </div>
         )}
@@ -241,9 +315,7 @@ export default function CardViewer({ cardId, onBack }) {
               )
             ) : (
               <span className="cv-field-value">
-                {key === "url" && card[key]
-                  ? <a href={card[key]} target="_blank" rel="noreferrer" className="cv-link">{card[key]}</a>
-                  : (card[key] || <em style={{ color: "var(--text-muted)" }}>—</em>)}
+                <FieldValue fieldKey={key} value={card[key]} />
               </span>
             )}
           </div>

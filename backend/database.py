@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, String, DateTime, Integer, Float, Text, event
+from sqlalchemy import create_engine, Column, String, DateTime, Integer, Float, Text, Boolean, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 DATABASE_URL = "sqlite:///./lionclaw.db"
@@ -49,8 +49,10 @@ class Project(Base):
     link_story = Column(Text, nullable=True)
     research_status = Column(String, default="idle")  # idle | running | done | error
     research_error = Column(String, nullable=True)
+    research_log = Column(Text, nullable=True)  # JSON array of log entries
     cut_status = Column(String, default="idle")  # idle | running | done | error
     cut_error = Column(String, nullable=True)
+    cut_log = Column(Text, nullable=True)  # JSON array of log entries
     status = Column(String, default="active")  # active | archived
     created_at = Column(DateTime)
 
@@ -77,6 +79,8 @@ class Card(Base):
     card_text = Column(Text, nullable=True)
     underlined = Column(Text, nullable=True)   # JSON array of underlined phrases
     highlighted = Column(Text, nullable=True)  # JSON array of highlighted phrases
+
+    missing_full_text = Column(Boolean, default=False, nullable=True)  # True if full article not fetched
 
     # Workflow status: researched | approved | cut | trashed
     card_status = Column(String, default="researched")
