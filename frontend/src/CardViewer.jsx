@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getCard, updateCard, generateCite, approveCard, trashCard, restoreCard } from "./api.js";
+import { getCard, updateCard, approveCard, trashCard, restoreCard, parseCiteCreator, populateArticleText } from "./api.js";
 
 function CardTextRenderer({ text, underlined = [], highlighted = [] }) {
   if (!text) return null;
@@ -64,8 +64,11 @@ export default function CardViewer({ cardId, onBack }) {
   const [form, setForm] = useState({});
   const [citeText, setCiteText] = useState("");
   const [showCiteInput, setShowCiteInput] = useState(false);
+  const [showArticleText, setShowArticleText] = useState(false);
+  const [articleTextInput, setArticleTextInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [generatingCite, setGeneratingCite] = useState(false);
+  const [populatingText, setPopulatingText] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -109,11 +112,11 @@ export default function CardViewer({ cardId, onBack }) {
     }
   };
 
-  const handleGenerateCite = async () => {
+  const handleParseCiteCreator = async () => {
     if (!citeText.trim()) return;
     setGeneratingCite(true);
     try {
-      const res = await generateCite(cardId, citeText);
+      const res = await parseCiteCreator(cardId, citeText);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }));
         throw new Error(err.detail || `HTTP ${res.status}`);
@@ -127,6 +130,27 @@ export default function CardViewer({ cardId, onBack }) {
       setError(e.message);
     } finally {
       setGeneratingCite(false);
+    }
+  };
+
+  const handlePopulateArticleText = async () => {
+    if (!articleTextInput.trim()) return;
+    setPopulatingText(true);
+    try {
+      const res = await populateArticleText(cardId, articleTextInput);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      const updated = await res.json();
+      setCard(updated);
+      setForm(updated);
+      setArticleTextInput("");
+      setShowArticleText(false);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setPopulatingText(false);
     }
   };
 
@@ -193,61 +217,116 @@ export default function CardViewer({ cardId, onBack }) {
 
       {error && <div className="error-box">{error}</div>}
 
-      {/* Cite generation */}
+      {/* Cite Creator */}
       <div className="cv-cite-section">
         <button className="advanced-toggle" onClick={() => setShowCiteInput((v) => !v)}>
-          {showCiteInput ? "▲" : "▼"} Generate cite from article text
+          {showCiteInput ? "▲" : "▼"} Populate cite from Cite Creator
         </button>
         {showCiteInput && (
           <div className="cv-cite-input">
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
+              Paste a cite in Verbatim Cite Creator format — fields will be extracted and populated automatically.
+            </div>
             <textarea
               className="prompt-textarea"
-              placeholder="Paste article text or metadata here…"
-              rows={6}
+              placeholder="Paste Cite Creator formatted cite here…"
+              rows={5}
               value={citeText}
               onChange={(e) => setCiteText(e.target.value)}
             />
             <button
               className="btn-primary"
               style={{ fontSize: 13, padding: "6px 16px" }}
-              onClick={handleGenerateCite}
+              onClick={handleParseCiteCreator}
               disabled={!citeText.trim() || generatingCite}
             >
-              {generatingCite ? "Generating…" : "Generate Cite"}
+              {generatingCite ? "Parsing…" : "Populate Fields"}
             </button>
           </div>
         )}
       </div>
 
+      {/* Populate article text */}
+      <div className="cv-cite-section">
+        <button className="advanced-toggle" onClick={() => setShowArticleText((v) => !v)}>
+          {showArticleText ? "▲" : "▼"} Populate article text
+          {!card.full_text_fetched && (
+            <span style={{ marginLeft: 8, color: "var(--warning)", fontSize: 11 }}>
+              ⚠ Full article text not fetched
+            </span>
+          )}
+        </button>
+        {showArticleText && (
+          <div className="cv-cite-input">
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
+              Paste the full article text here to use as the card body.
+            </div>
+            <textarea
+              className="prompt-textarea"
+              placeholder="Paste article text here…"
+              rows={8}
+              value={articleTextInput}
+              onChange={(e) => setArticleTextInput(e.target.value)}
+            />
+            <button
+              className="btn-primary"
+              style={{ fontSize: 13, padding: "6px 16px" }}
+              onClick={handlePopulateArticleText}
+              disabled={!articleTextInput.trim() || populatingText}
+            >
+              {populatingText ? "Saving…" : "Set as Card Text"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Low-confidence warning */}
+      {(card.low_confidence_fields || []).length > 0 && (
+        <div className="cv-low-confidence-warning">
+          ⚠ Low-confidence fields (not known with high certainty): {(card.low_confidence_fields || []).join(", ")}
+        </div>
+      )}
+
       {/* Card metadata fields */}
       <div className="cv-fields">
-        {FIELDS.map(({ key, label, multiline }) => (
-          <div key={key} className="cv-field-row">
-            <span className="cv-field-label">{label}</span>
-            {editing ? (
-              multiline ? (
-                <textarea
-                  className="cv-field-input"
-                  rows={2}
-                  value={form[key] || ""}
-                  onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
-                />
-              ) : (
-                <input
-                  className="cv-field-input"
-                  value={form[key] || ""}
-                  onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
-                />
-              )
-            ) : (
-              <span className="cv-field-value">
-                {key === "url" && card[key]
-                  ? <a href={card[key]} target="_blank" rel="noreferrer" className="cv-link">{card[key]}</a>
-                  : (card[key] || <em style={{ color: "var(--text-muted)" }}>—</em>)}
+        {FIELDS.map(({ key, label, multiline }) => {
+          const isLowConfidence = (card.low_confidence_fields || []).includes(key);
+          return (
+            <div key={key} className={`cv-field-row ${isLowConfidence ? "cv-field-low-confidence" : ""}`}>
+              <span className="cv-field-label">
+                {label}
+                {isLowConfidence && <span className="cv-confidence-flag" title="Low confidence">⚠</span>}
               </span>
-            )}
-          </div>
-        ))}
+              {editing ? (
+                multiline ? (
+                  <textarea
+                    className="cv-field-input"
+                    rows={2}
+                    value={form[key] || ""}
+                    onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+                  />
+                ) : (
+                  <input
+                    className="cv-field-input"
+                    value={form[key] || ""}
+                    onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+                  />
+                )
+              ) : (
+                <span className="cv-field-value">
+                  {key === "url" && card[key]
+                    ? <a href={card[key]} target="_blank" rel="noreferrer" className="cv-link">{card[key]}</a>
+                    : (card[key] != null && card[key] !== ""
+                        ? card[key]
+                        : <em className={isLowConfidence ? "cv-null-value" : ""} style={{ color: "var(--text-muted)" }}>
+                            {isLowConfidence ? "unknown" : "—"}
+                          </em>
+                      )}
+                </span>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* Card text */}

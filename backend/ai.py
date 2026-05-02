@@ -129,19 +129,21 @@ _RESEARCH_SYSTEM = """You are an expert policy debate researcher. Given a projec
 
 2. Generate 8 specific article/source suggestions — one per causal link or key warrant — that would provide evidence for this argument. Focus on real, citable academic papers, government reports, and credible journalism from your training knowledge.
 
+IMPORTANT: If you are NOT confident about a field (e.g. you don't know the exact author, date, or qualifications), set it to null rather than guessing. Only populate fields you are highly confident about.
+
 Return valid JSON only (no markdown fences):
 {
   "link_story": "...",
   "articles": [
     {
       "tag": "one- or two-sentence debate tag stating what the card proves",
-      "author": "Last, First",
-      "author_qualifications": "professional role and institution",
-      "date": "YYYY",
-      "title": "full article or paper title",
-      "publisher": "journal, website, or publishing institution",
-      "url": "",
-      "initials": "FL",
+      "author": "Last, First — or null if not known with confidence",
+      "author_qualifications": "professional role and institution — or null if not known",
+      "date": "YYYY — or null if not known",
+      "title": "full article or paper title — or null if not known",
+      "publisher": "journal, website, or publishing institution — or null if not known",
+      "url": null,
+      "initials": "FL — or null if author not known",
       "excerpt": "2-3 sentence passage that forms the body of the card"
     }
   ]
@@ -160,6 +162,23 @@ Return valid JSON only (no markdown fences):
   "initials": "cite initials — first letter of first name + first letter of last name, e.g. 'JD'"
 }"""
 
+_CITE_CREATOR_SYSTEM = """You are a debate cite parser. The user will paste a cite formatted in Verbatim Cite Creator format. Parse it and extract the citation fields.
+
+Verbatim Cite Creator format looks like:
+  LastName YY — or — Last, First YYYY — followed by qualifications, title, publisher, date, URL, etc.
+  Fields may appear in various orders. The initials are typically the first letters of the author name.
+
+Return valid JSON only (no markdown fences):
+{
+  "author": "Last, First  (use 'Last et al.' for multiple authors)",
+  "author_qualifications": "professional role, title, and institution exactly as stated",
+  "date": "YYYY  or  YYYY/MM  or  YYYY/MM/DD",
+  "title": "article or paper title",
+  "publisher": "journal, website, or publication name",
+  "url": "URL if present, else empty string",
+  "initials": "two-letter initials used in the cite, e.g. 'JD'"
+}"""
+
 
 _QUERY_SYSTEM = (
     "Generate 3 specific web search queries to find academic or policy articles that support "
@@ -173,19 +192,21 @@ _RESEARCH_WITH_SOURCES_SYSTEM = """You are an expert policy debate researcher. G
 
 2. Generate 8 article suggestions grounded in the provided search results. Prefer sources that appear in the search results — use their exact titles and URLs. You may add 1-2 additional suggestions from your training knowledge only if the search results leave key links in the argument unsupported; leave their URL field empty.
 
+IMPORTANT: If you are NOT confident about a field (e.g. you don't know the exact author, date, or qualifications), set it to null rather than guessing. Only populate fields you are highly confident about.
+
 Return valid JSON only (no markdown fences):
 {
   "link_story": "...",
   "articles": [
     {
       "tag": "one- or two-sentence debate tag stating what the card proves",
-      "author": "Last, First",
-      "author_qualifications": "professional role and institution",
-      "date": "YYYY",
-      "title": "exact title from search results or training knowledge",
-      "publisher": "journal, website, or publishing institution",
-      "url": "exact URL from search results, or empty string if not from search",
-      "initials": "FL",
+      "author": "Last, First — or null if not known with confidence",
+      "author_qualifications": "professional role and institution — or null if not known",
+      "date": "YYYY — or null if not known",
+      "title": "exact title from search results or training knowledge — or null",
+      "publisher": "journal, website, or publishing institution — or null",
+      "url": "exact URL from search results, or null if not from search",
+      "initials": "FL — or null if author not known",
       "excerpt": "2-3 sentence passage that forms the body of the card"
     }
   ]
@@ -251,6 +272,22 @@ async def generate_cite(article_text: str) -> tuple[dict, str, dict]:
     try:
         text, model_id, tokens = await router.call(
             _CITE_SYSTEM, article_text[:4000], max_tokens=512
+        )
+        json_match = re.search(r"\{[\s\S]*\}", text)
+        if json_match:
+            return json.loads(json_match.group(0)), model_id, tokens
+        return {}, model_id, tokens
+    except json.JSONDecodeError:
+        return {}, "none", _EMPTY_TOKENS
+    except Exception as exc:
+        return {"error": str(exc)}, "none", _EMPTY_TOKENS
+
+
+async def parse_cite_creator(cite_text: str) -> tuple[dict, str, dict]:
+    """Parse a Verbatim Cite Creator formatted cite into structured fields."""
+    try:
+        text, model_id, tokens = await router.call(
+            _CITE_CREATOR_SYSTEM, cite_text[:2000], max_tokens=512
         )
         json_match = re.search(r"\{[\s\S]*\}", text)
         if json_match:

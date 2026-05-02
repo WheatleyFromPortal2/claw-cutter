@@ -30,7 +30,7 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ai import get_prompts, generate_cite
+from ai import get_prompts, generate_cite, parse_cite_creator
 from card_export import export_cards_to_docx
 from database import Base, Job, Project, Card, SessionLocal, engine, get_db
 from metrics import get_current_user_count, get_tokens_per_sec, get_uptime_secs, record_user
@@ -368,6 +368,18 @@ class ProjectCreate(BaseModel):
 
 def _project_out(p: Project, db: Session) -> dict:
     card_count = db.query(Card).filter(Card.project_id == p.id, Card.card_status != "trashed").count()
+    research_log = []
+    if p.research_log:
+        try:
+            research_log = json.loads(p.research_log)
+        except Exception:
+            pass
+    cut_log = []
+    if p.cut_log:
+        try:
+            cut_log = json.loads(p.cut_log)
+        except Exception:
+            pass
     return {
         "id": p.id,
         "name": p.name,
@@ -376,8 +388,10 @@ def _project_out(p: Project, db: Session) -> dict:
         "link_story": p.link_story or "",
         "research_status": p.research_status or "idle",
         "research_error": p.research_error or "",
+        "research_log": research_log,
         "cut_status": p.cut_status or "idle",
         "cut_error": p.cut_error or "",
+        "cut_log": cut_log,
         "status": p.status or "active",
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "card_count": card_count,
@@ -511,24 +525,30 @@ def start_project_cut(
 
 # ── Cards ─────────────────────────────────────────────────────────────────────
 
+_CITE_FIELDS = ("author", "author_qualifications", "date", "title", "publisher", "url", "initials")
+
+
 def _card_out(c: Card) -> dict:
+    low_confidence = [f for f in _CITE_FIELDS if getattr(c, f) is None]
     return {
         "id": c.id,
         "project_id": c.project_id or "",
         "tag": c.tag or "",
-        "author": c.author or "",
-        "author_qualifications": c.author_qualifications or "",
-        "date": c.date or "",
-        "title": c.title or "",
-        "publisher": c.publisher or "",
-        "url": c.url or "",
-        "initials": c.initials or "",
+        "author": c.author,
+        "author_qualifications": c.author_qualifications,
+        "date": c.date,
+        "title": c.title,
+        "publisher": c.publisher,
+        "url": c.url,
+        "initials": c.initials,
         "topic": c.topic or "",
         "tags": json.loads(c.tags) if c.tags else [],
         "card_text": c.card_text or "",
+        "full_text_fetched": bool(c.full_text_fetched),
         "underlined": json.loads(c.underlined) if c.underlined else [],
         "highlighted": json.loads(c.highlighted) if c.highlighted else [],
         "card_status": c.card_status or "researched",
+        "low_confidence_fields": low_confidence,
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
@@ -709,6 +729,156 @@ async def generate_card_cite(
             setattr(card, field, val)
 
     card.updated_at = datetime.utcnow()
+    db.commit()
+    return _card_out(card)
+
+
+@app.post("/api/projects/{project_id}/cards/approve-all")
+def approve_all_cards(
+    project_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    now = datetime.utcnow()
+    cards = (
+        db.query(Card)
+        .filter(Card.project_id == project_id, Card.card_status == "researched")
+        .all()
+    )
+    for c in cards:
+        c.card_status = "approved"
+        c.updated_at = now
+    db.commit()
+    return {"approved": len(cards)}
+
+
+@app.post("/api/projects/{project_id}/cards/trash-unapproved")
+def trash_unapproved_cards(
+    project_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    now = datetime.utcnow()
+    cards = (
+        db.query(Card)
+        .filter(Card.project_id == project_id, Card.card_status == "researched")
+        .all()
+    )
+    for c in cards:
+        c.card_status = "trashed"
+        c.updated_at = now
+    db.commit()
+    return {"trashed": len(cards)}
+
+
+class CiteCreatorRequest(BaseModel):
+    cite_text: str
+
+
+@app.post("/api/cards/{card_id}/cite-creator")
+async def parse_card_cite_creator(
+    card_id: str,
+    body: CiteCreatorRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    card = db.query(Card).filter(Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+
+    cite, model_id, tokens = await parse_cite_creator(body.cite_text)
+    if cite.get("error"):
+        raise HTTPException(status_code=500, detail=cite["error"])
+
+    for field in ("author", "author_qualifications", "date", "title", "publisher", "url", "initials"):
+        val = cite.get(field)
+        if val is not None:
+            setattr(card, field, val if val else None)
+
+    card.updated_at = datetime.utcnow()
+    db.commit()
+    return _card_out(card)
+
+
+class ArticleTextRequest(BaseModel):
+    article_text: str
+
+
+@app.post("/api/cards/{card_id}/article-text")
+def set_card_article_text(
+    card_id: str,
+    body: ArticleTextRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    card = db.query(Card).filter(Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+
+    card.card_text = body.article_text
+    card.full_text_fetched = 1
+    card.updated_at = datetime.utcnow()
+    db.commit()
+    return _card_out(card)
+
+
+class AddFromUrlRequest(BaseModel):
+    url: str
+
+
+@app.post("/api/projects/{project_id}/cards/from-url")
+async def add_card_from_url(
+    project_id: str,
+    body: AddFromUrlRequest,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    import httpx
+
+    url = body.url.strip()
+    title = url
+    card_text = ""
+    fetched = 0
+
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": "LionClaw/1.0"})
+            resp.raise_for_status()
+            raw_html = resp.text
+
+        import re as _re
+        title_match = _re.search(r"<title[^>]*>([^<]+)</title>", raw_html, _re.I)
+        if title_match:
+            title = title_match.group(1).strip()
+
+        clean = _re.sub(r"<script[^>]*>[\s\S]*?</script>", "", raw_html, flags=_re.I)
+        clean = _re.sub(r"<style[^>]*>[\s\S]*?</style>", "", clean, flags=_re.I)
+        clean = _re.sub(r"<[^>]+>", " ", clean)
+        clean = _re.sub(r"&[a-zA-Z]+;", " ", clean)
+        clean = _re.sub(r"\s+", " ", clean).strip()
+        card_text = clean[:8000]
+        fetched = 1
+    except Exception:
+        pass
+
+    card = Card(
+        id=str(uuid.uuid4()),
+        project_id=project_id,
+        tag="",
+        title=title,
+        url=url,
+        card_text=card_text,
+        full_text_fetched=fetched,
+        topic=project.topic or "",
+        tags=json.dumps([f"proj::{project.name}"]),
+        card_status="approved",
+        created_at=datetime.utcnow(),
+    )
+    db.add(card)
     db.commit()
     return _card_out(card)
 
@@ -908,6 +1078,17 @@ def status_page(db: Session = Depends(get_db)):
 </html>"""
     return HTMLResponse(content=html)
 
+
+# Serve favicon.png from backend/resources if present
+_resources_dir = Path(__file__).parent / "resources"
+_resources_dir.mkdir(exist_ok=True)
+
+@app.get("/favicon.png")
+def serve_favicon():
+    favicon_path = _resources_dir / "favicon.png"
+    if favicon_path.exists():
+        return FileResponse(str(favicon_path), media_type="image/png")
+    raise HTTPException(status_code=404, detail="favicon.png not found")
 
 # Serve built frontend in production
 frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"

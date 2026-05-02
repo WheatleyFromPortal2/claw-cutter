@@ -9,6 +9,9 @@ import {
   restoreCard,
   exportCards,
   updateProject,
+  approveAllCards,
+  trashUnapprovedCards,
+  addCardFromUrl,
 } from "./api.js";
 
 const TAB_LABELS = {
@@ -18,13 +21,91 @@ const TAB_LABELS = {
   trashed: "Trash",
 };
 
-function CardRow({ card, onApprove, onTrash, onRestore, onSelect, selected, showSelect }) {
+function CardTextRenderer({ text, underlined = [], highlighted = [] }) {
+  if (!text) return <em style={{ color: "var(--text-muted)" }}>No card text.</em>;
+
+  const types = Array(text.length).fill("plain");
+  for (const phrase of underlined) {
+    let idx = text.indexOf(phrase);
+    while (idx !== -1) {
+      for (let p = idx; p < idx + phrase.length; p++) {
+        if (types[p] === "plain") types[p] = "ul";
+      }
+      idx = text.indexOf(phrase, idx + phrase.length);
+    }
+  }
+  for (const phrase of highlighted) {
+    let idx = text.indexOf(phrase);
+    while (idx !== -1) {
+      for (let p = idx; p < idx + phrase.length; p++) {
+        types[p] = "hl";
+      }
+      idx = text.indexOf(phrase, idx + phrase.length);
+    }
+  }
+
+  const segs = [];
+  let i = 0;
+  while (i < text.length) {
+    const t = types[i];
+    let j = i;
+    while (j < text.length && types[j] === t) j++;
+    segs.push({ type: t, text: text.slice(i, j) });
+    i = j;
+  }
+
+  return (
+    <p className="card-body-text">
+      {segs.map((seg, idx) => {
+        if (seg.type === "hl") return <mark key={idx} className="card-hl">{seg.text}</mark>;
+        if (seg.type === "ul") return <span key={idx} className="card-ul">{seg.text}</span>;
+        return <span key={idx}>{seg.text}</span>;
+      })}
+    </p>
+  );
+}
+
+function CutCardPreview({ card }) {
+  const [expanded, setExpanded] = useState(false);
+  const cite = [card.initials, card.date?.slice(0, 4), card.author, card.publisher]
+    .filter(Boolean).join(" · ");
+
+  return (
+    <div className="cut-card-preview">
+      <div className="cut-card-header" onClick={() => setExpanded((v) => !v)}>
+        <span className="cut-card-toggle">{expanded ? "▼" : "▶"}</span>
+        <div className="res-card-body" style={{ flex: 1 }}>
+          <div className="res-card-tag">{card.tag || card.title || "Untitled"}</div>
+          {cite && <div className="res-card-cite">{cite}</div>}
+        </div>
+        <span className="cut-card-stats">
+          {(card.underlined || []).length} UL · {(card.highlighted || []).length} HL
+        </span>
+      </div>
+      {expanded && (
+        <div className="cut-card-body">
+          <CardTextRenderer
+            text={card.card_text}
+            underlined={card.underlined || []}
+            highlighted={card.highlighted || []}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CardRow({ card, onApprove, onTrash, onRestore, onSelect, selected, showSelect, showTitle }) {
   const statusColor = {
     researched: "var(--text-muted)",
     approved: "var(--warning)",
     cut: "var(--success)",
     trashed: "#f87171",
   };
+
+  const displayName = showTitle
+    ? (card.title || card.tag || "Untitled")
+    : (card.tag || card.title || "Untitled");
 
   return (
     <div className={`res-card-row ${selected ? "selected" : ""}`} onClick={() => onSelect(card.id)}>
@@ -38,7 +119,7 @@ function CardRow({ card, onApprove, onTrash, onRestore, onSelect, selected, show
         />
       )}
       <div className="res-card-body">
-        <div className="res-card-tag">{card.tag || "Untitled"}</div>
+        <div className="res-card-tag">{displayName}</div>
         <div className="res-card-cite">
           {[card.initials, card.date ? card.date.slice(0, 4) : "", card.author, card.publisher]
             .filter(Boolean)
@@ -75,6 +156,10 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState({ name: "", topic: "", description: "" });
   const [saving, setSaving] = useState(false);
+  const [bulkWorking, setBulkWorking] = useState(false);
+  const [addUrlOpen, setAddUrlOpen] = useState(false);
+  const [addUrlValue, setAddUrlValue] = useState("");
+  const [addUrlWorking, setAddUrlWorking] = useState(false);
   const pollRef = useRef(null);
 
   const loadProject = useCallback(async () => {
@@ -137,6 +222,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
       const updated = await res.json();
       setProject((p) => ({ ...p, ...updated }));
       setEditing(false);
+      await loadCards();
     } catch (e) {
       setError(e.message);
     } finally {
@@ -179,6 +265,50 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
   const handleRestore = async (id) => {
     await restoreCard(id);
     setCards((prev) => prev.filter((c) => c.id !== id));
+  };
+
+  const handleApproveAll = async () => {
+    setBulkWorking(true);
+    try {
+      await approveAllCards(projectId);
+      await loadCards();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBulkWorking(false);
+    }
+  };
+
+  const handleTrashUnapproved = async () => {
+    if (!confirm("Trash all unapproved (researched) cards?")) return;
+    setBulkWorking(true);
+    try {
+      await trashUnapprovedCards(projectId);
+      await loadCards();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBulkWorking(false);
+    }
+  };
+
+  const handleAddFromUrl = async () => {
+    if (!addUrlValue.trim()) return;
+    setAddUrlWorking(true);
+    try {
+      const res = await addCardFromUrl(projectId, addUrlValue.trim());
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      setAddUrlValue("");
+      setAddUrlOpen(false);
+      await loadCards();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setAddUrlWorking(false);
+    }
   };
 
   const toggleSelect = (id) => {
@@ -258,8 +388,18 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
         <div className="error-box">Cut error: {project.cut_error}</div>
       )}
       {(isResearching || isCutting) && (
-        <div className="info-box">
-          {isResearching ? "AI is researching articles for this project…" : "AI is cutting approved cards…"}
+        <div className="activity-log">
+          <div className="activity-log-title">
+            {isResearching ? "Researching…" : "Cutting cards…"}
+          </div>
+          <div className="activity-log-entries">
+            {(isResearching ? (project.research_log || []) : (project.cut_log || [])).map((line, i) => (
+              <div key={i} className="activity-log-line">{line}</div>
+            ))}
+            {(isResearching ? (project.research_log || []) : (project.cut_log || [])).length === 0 && (
+              <div className="activity-log-line muted">Starting…</div>
+            )}
+          </div>
         </div>
       )}
 
@@ -308,7 +448,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
         ))}
       </div>
 
-      {/* Search + export */}
+      {/* Search + bulk actions */}
       <div className="pd-toolbar">
         <input
           className="pd-search"
@@ -316,7 +456,45 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        {(tab === "cut" || tab === "approved") && (
+        {tab === "researched" && (
+          <>
+            <button
+              className="btn-export"
+              onClick={handleApproveAll}
+              disabled={bulkWorking || cards.length === 0}
+              title="Approve all visible cards"
+            >
+              {bulkWorking ? "Working…" : "Approve All"}
+            </button>
+            <button
+              className="btn-bulk-trash"
+              onClick={handleTrashUnapproved}
+              disabled={bulkWorking || cards.length === 0}
+              title="Trash all unapproved cards"
+            >
+              Trash All
+            </button>
+          </>
+        )}
+        {tab === "approved" && (
+          <>
+            <button
+              className="btn-secondary"
+              style={{ fontSize: 12, padding: "5px 10px", whiteSpace: "nowrap" }}
+              onClick={() => setAddUrlOpen((v) => !v)}
+            >
+              + Add from URL
+            </button>
+            <button
+              className="btn-export"
+              onClick={handleExport}
+              disabled={exporting}
+            >
+              {exporting ? "Exporting…" : selected.size > 0 ? `Export ${selected.size}` : "Export All"}
+            </button>
+          </>
+        )}
+        {tab === "cut" && (
           <button
             className="btn-export"
             onClick={handleExport}
@@ -326,6 +504,25 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
           </button>
         )}
       </div>
+
+      {tab === "approved" && addUrlOpen && (
+        <div className="add-url-form">
+          <input
+            className="pd-search"
+            placeholder="Paste article URL here…"
+            value={addUrlValue}
+            onChange={(e) => setAddUrlValue(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleAddFromUrl()}
+            autoFocus
+          />
+          <button className="btn-primary" style={{ fontSize: 12, padding: "5px 14px" }} onClick={handleAddFromUrl} disabled={addUrlWorking || !addUrlValue.trim()}>
+            {addUrlWorking ? "Adding…" : "Add"}
+          </button>
+          <button className="btn-secondary" style={{ fontSize: 12, padding: "5px 10px" }} onClick={() => { setAddUrlOpen(false); setAddUrlValue(""); }}>
+            Cancel
+          </button>
+        </div>
+      )}
 
       {/* Card list */}
       {cards.length === 0 ? (
@@ -338,6 +535,21 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
             ? 'No cut cards. Approve cards then click "Cut Approved".'
             : "Trash is empty."}
         </div>
+      ) : tab === "cut" ? (
+        <div className="cut-card-list">
+          {cards.map((card) => (
+            <div key={card.id} className="cut-card-row-wrap">
+              <input
+                type="checkbox"
+                className="res-card-checkbox"
+                checked={selected.has(card.id)}
+                onChange={() => toggleSelect(card.id)}
+                style={{ marginTop: 2, flexShrink: 0 }}
+              />
+              <CutCardPreview card={card} />
+            </div>
+          ))}
+        </div>
       ) : (
         <div className="res-card-list">
           {cards.map((card) => (
@@ -348,11 +560,12 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
               onTrash={handleTrash}
               onRestore={handleRestore}
               onSelect={(id) => {
-                if (tab === "cut" || tab === "approved") toggleSelect(id);
+                if (tab === "approved") toggleSelect(id);
                 else onSelectCard(id);
               }}
               selected={selected.has(card.id)}
-              showSelect={tab === "cut" || tab === "approved"}
+              showSelect={tab === "approved"}
+              showTitle={tab === "researched"}
             />
           ))}
         </div>

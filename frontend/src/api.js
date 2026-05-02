@@ -76,6 +76,33 @@ export const startResearch = (id) =>
 export const startProjectCut = (id) =>
   fetch(`${BASE}/projects/${id}/cut`, { method: "POST", headers: headers() });
 
+export const approveAllCards = (projectId) =>
+  fetch(`${BASE}/projects/${projectId}/cards/approve-all`, { method: "POST", headers: headers() });
+
+export const trashUnapprovedCards = (projectId) =>
+  fetch(`${BASE}/projects/${projectId}/cards/trash-unapproved`, { method: "POST", headers: headers() });
+
+export const addCardFromUrl = (projectId, url) =>
+  fetch(`${BASE}/projects/${projectId}/cards/from-url`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ url }),
+  });
+
+export const populateArticleText = (cardId, articleText) =>
+  fetch(`${BASE}/cards/${cardId}/article-text`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ article_text: articleText }),
+  });
+
+export const parseCiteCreator = (cardId, citeText) =>
+  fetch(`${BASE}/cards/${cardId}/cite-creator`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ cite_text: citeText }),
+  });
+
 // ── Cards ──────────────────────────────────────────────────────────────────
 
 export const listProjectCards = (projectId, { cardStatus, q } = {}) => {
