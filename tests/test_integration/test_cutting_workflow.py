@@ -80,8 +80,12 @@ def test_full_cutting_workflow(integration_client, test_docx_bytes, tmp_path):
                 return {"highlighted": [hl_phrase]}, "mock-model", {"input": 1, "output": 1}
         return {"highlighted": []}, "mock-model", {"input": 1, "output": 0}
 
+    async def mock_refine(card, topic, underlined, highlighted, ul_prompt, hl_prompt):
+        return {"satisfied": True}, "mock-model", {}
+
     with patch("tasks.underline_card", side_effect=mock_underline), \
-         patch("tasks.highlight_card", side_effect=mock_highlight):
+         patch("tasks.highlight_card", side_effect=mock_highlight), \
+         patch("tasks.review_and_refine_cutting", side_effect=mock_refine):
 
         # 1. Upload
         resp = integration_client.post(
@@ -138,8 +142,12 @@ def test_cutting_workflow_all_cards_processed(integration_client, test_docx_byte
     async def mock_highlight(card, underlined, prompt):
         return {"highlighted": []}, "mock", {}
 
+    async def mock_refine(card, topic, underlined, highlighted, ul_prompt, hl_prompt):
+        return {"satisfied": True}, "mock", {}
+
     with patch("tasks.underline_card", side_effect=mock_underline), \
-         patch("tasks.highlight_card", side_effect=mock_highlight):
+         patch("tasks.highlight_card", side_effect=mock_highlight), \
+         patch("tasks.review_and_refine_cutting", side_effect=mock_refine):
         resp = integration_client.post(
             "/api/jobs",
             files={"file": ("test2.docx", test_docx_bytes, "application/octet-stream")},
@@ -161,8 +169,12 @@ def test_cutting_workflow_topic_only_mode(integration_client, test_docx_bytes):
     async def mock_highlight(card, underlined, prompt):
         return {"highlighted": []}, "mock", {}
 
+    async def mock_refine(card, topic, underlined, highlighted, ul_prompt, hl_prompt):
+        return {"satisfied": True}, "mock", {}
+
     with patch("tasks.underline_card", side_effect=mock_underline), \
-         patch("tasks.highlight_card", side_effect=mock_highlight):
+         patch("tasks.highlight_card", side_effect=mock_highlight), \
+         patch("tasks.review_and_refine_cutting", side_effect=mock_refine):
         resp = integration_client.post(
             "/api/jobs",
             files={"file": ("test3.docx", test_docx_bytes, "application/octet-stream")},
@@ -187,8 +199,12 @@ def test_cutting_workflow_card_log_populated(integration_client, test_docx_bytes
     async def mock_highlight(card, underlined, prompt):
         return {"highlighted": ["phrase"]}, "mock", {}
 
+    async def mock_refine(card, topic, underlined, highlighted, ul_prompt, hl_prompt):
+        return {"satisfied": True}, "mock", {}
+
     with patch("tasks.underline_card", side_effect=mock_underline), \
-         patch("tasks.highlight_card", side_effect=mock_highlight):
+         patch("tasks.highlight_card", side_effect=mock_highlight), \
+         patch("tasks.review_and_refine_cutting", side_effect=mock_refine):
         resp = integration_client.post(
             "/api/jobs",
             files={"file": ("log_test.docx", test_docx_bytes, "application/octet-stream")},

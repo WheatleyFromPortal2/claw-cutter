@@ -87,8 +87,12 @@ def test_something_with_ai(integration_client, test_docx_bytes):
     async def mock_highlight(card, underlined, prompt):
         return {"highlighted": ["phrase"]}, "mock", {}
 
+    async def mock_refine(card, topic, underlined, highlighted, ul_prompt, hl_prompt):
+        return {"satisfied": True}, "mock", {}
+
     with patch("tasks.underline_card", side_effect=mock_underline), \
-         patch("tasks.highlight_card", side_effect=mock_highlight):
+         patch("tasks.highlight_card", side_effect=mock_highlight), \
+         patch("tasks.review_and_refine_cutting", side_effect=mock_refine):
         resp = integration_client.post(
             "/api/jobs",
             files={"file": ("test.docx", test_docx_bytes, "application/octet-stream")},

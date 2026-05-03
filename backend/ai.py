@@ -427,6 +427,68 @@ async def fetch_article_text(url: str) -> tuple[str, bool]:
         return "", False
 
 
+_REFINE_SYSTEM = """You are a quality reviewer for competitive policy debate card cutting.
+
+You will receive the original card, the cutting criteria, and the underlines and highlights produced by a previous pass.
+
+Your job: decide whether the current cuts faithfully follow the criteria. Only flag "not satisfied" when you can make a concrete, meaningful improvement — do not make trivial or cosmetic changes.
+
+Rules for any revised output:
+- Every phrase in "underlined" and "highlighted" MUST be an exact verbatim substring of the card body text — no paraphrasing, no ellipses, no reordering
+- Highlighted phrases must be exact substrings of an underlined phrase
+- If the current cuts are already good, return satisfied: true
+
+Return valid JSON only (no markdown fences):
+{"satisfied": true}
+
+OR, if you can meaningfully improve the cuts:
+{
+  "satisfied": false,
+  "underlined": ["exact verbatim phrase from card body", ...],
+  "highlighted": ["exact verbatim phrase that appears inside an underlined phrase", ...]
+}"""
+
+
+async def review_and_refine_cutting(
+    card: dict,
+    topic: str,
+    underlined: list[str],
+    highlighted: list[str],
+    underline_prompt: str,
+    highlight_prompt: str,
+) -> tuple[dict, str, dict]:
+    """Review current underlines/highlights and return refined versions if needed.
+
+    Returns (result, model_id, tokens) where result is:
+      {"satisfied": True}  — current cuts are good, stop looping
+      {"satisfied": False, "underlined": [...], "highlighted": [...]}  — improved cuts
+    """
+    body_text = card.get("body") or card.get("card_text", "")
+    ul_numbered = "\n".join(f"{i+1}. {p}" for i, p in enumerate(underlined)) or "(none)"
+    hl_numbered = "\n".join(f"{i+1}. {p}" for i, p in enumerate(highlighted)) or "(none)"
+
+    user_msg = (
+        f"TOPIC: {topic}\n\n"
+        f"--- UNDERLINE CRITERIA ---\n{underline_prompt}\n\n"
+        f"--- HIGHLIGHT CRITERIA ---\n{highlight_prompt}\n\n"
+        f"--- CARD ---\n"
+        f"TAG: {card.get('tag', '')}\n"
+        f"BODY:\n{body_text[:3000]}\n\n"
+        f"--- CURRENT UNDERLINES ---\n{ul_numbered}\n\n"
+        f"--- CURRENT HIGHLIGHTS ---\n{hl_numbered}"
+    )
+    try:
+        text, model_id, tokens = await router.call(_REFINE_SYSTEM, user_msg, max_tokens=2048)
+        obj_match = re.search(r"\{[\s\S]*\}", text)
+        if obj_match:
+            return json.loads(obj_match.group(0)), model_id, tokens
+        return {"satisfied": True}, model_id, tokens
+    except json.JSONDecodeError:
+        return {"satisfied": True}, "none", _EMPTY_TOKENS
+    except Exception:
+        return {"satisfied": True}, "none", _EMPTY_TOKENS
+
+
 async def cut_card_with_context(
     card: dict,
     project_name: str,

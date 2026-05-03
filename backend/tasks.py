@@ -9,14 +9,16 @@ from database import SessionLocal, Job, Project, Card
 from docx_utils import strip_cutting, extract_text_from_xml, apply_cuttings, build_output_docx
 from ai import (
     parse_cards, underline_card, highlight_card, get_prompts,
-    research_project, cut_card_with_context, _generate_search_queries,
-    triage_search_results, fetch_article_text,
+    research_project, cut_card_with_context, review_and_refine_cutting,
+    _generate_search_queries, triage_search_results, fetch_article_text,
 )
 from search import web_search, search_enabled
 from metrics import record_tokens
 
 DATA_DIR = os.getenv("DATA_DIR", "./data")
 logger = logging.getLogger(__name__)
+
+MAX_REFINE_ROUNDS = 2  # refinement passes after the initial cut
 
 
 async def run_cutting_job(job_id: str) -> None:
@@ -91,6 +93,20 @@ async def run_cutting_job(job_id: str) -> None:
                     total_output_tokens += hl_out
                     record_tokens(hl_model, hl_in + hl_out)
                     highlighted = highlight_result.get("highlighted", [])
+
+                    for _ in range(MAX_REFINE_ROUNDS):
+                        refine_result, ref_model, ref_tokens = await review_and_refine_cutting(
+                            card, topic, underlined, highlighted, underline_prompt, highlight_prompt
+                        )
+                        ref_in = ref_tokens.get("input", 0)
+                        ref_out = ref_tokens.get("output", 0)
+                        total_input_tokens += ref_in
+                        total_output_tokens += ref_out
+                        record_tokens(ref_model, ref_in + ref_out)
+                        if refine_result.get("satisfied", True):
+                            break
+                        underlined = refine_result.get("underlined", underlined)
+                        highlighted = refine_result.get("highlighted", highlighted)
                 else:
                     highlighted = []
                 cuttings.append(
@@ -357,6 +373,21 @@ async def run_project_cut_job(project_id: str) -> None:
 
             underlined = ul_result.get("underlined", [])
             highlighted = hl_result.get("highlighted", [])
+
+            if underlined:
+                for refine_round in range(1, MAX_REFINE_ROUNDS + 1):
+                    refine_result, ref_model, ref_tokens = await review_and_refine_cutting(
+                        card_dict, project.topic or "", underlined, highlighted,
+                        prompts["underline"], prompts["highlight"],
+                    )
+                    record_tokens(ref_model, ref_tokens.get("input", 0) + ref_tokens.get("output", 0))
+                    if refine_result.get("satisfied", True):
+                        add_log(f"  ✓ Refinement round {refine_round}: satisfied")
+                        break
+                    underlined = refine_result.get("underlined", underlined)
+                    highlighted = refine_result.get("highlighted", highlighted)
+                    add_log(f"  ↻ Refinement round {refine_round}: revised to {len(underlined)} underlines, {len(highlighted)} highlights")
+
             card.underlined = json.dumps(underlined)
             card.highlighted = json.dumps(highlighted)
             card.card_status = "cut"
