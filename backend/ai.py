@@ -143,8 +143,7 @@ Return valid JSON only (no markdown fences):
       "title": "full article or paper title, or null if uncertain",
       "publisher": "journal, website, or publishing institution, or null if uncertain",
       "url": "",
-      "initials": "FL, or null if uncertain",
-      "excerpt": "2-3 sentence passage that forms the body of the card"
+      "initials": "FL, or null if uncertain"
     }
   ]
 }"""
@@ -187,16 +186,36 @@ Return valid JSON only (no markdown fences):
 
 
 _QUERY_SYSTEM = (
-    "Generate 3 specific web search queries to find academic or policy articles that support "
+    "Generate 4 specific web search queries to find academic or policy articles that support "
     "the given debate argument. Return a JSON array of strings only — no other text:\n"
-    '["query one", "query two", "query three"]'
+    '["query one", "query two", "query three", "query four"]'
 )
+
+_TRIAGE_SYSTEM = """You are screening web search results for a competitive policy debate research project.
+
+Given a topic, argument description, and a numbered list of search results, decide which results are worth keeping as potential card sources.
+
+KEEP a result if:
+- The URL points to a specific article, report, paper, or substantive piece (not a homepage, search page, or index)
+- The title and snippet suggest the content is directly relevant to the argument
+- The source appears credible: academic journal, government agency, think tank, reputable news outlet, or expert publication
+
+REJECT a result if:
+- The URL is a domain root, category/tag page, or search results page
+- The content is clearly off-topic or only tangentially related to the argument
+- The source is a social media platform, forum, wiki, or clearly non-authoritative site
+- The snippet is empty, garbled, or purely navigational text
+
+Return ONLY a JSON object with no explanation:
+{"keep": [0, 2, 5]}
+
+Use the integer index numbers from the numbered input list."""
 
 _RESEARCH_WITH_SOURCES_SYSTEM = """You are an expert policy debate researcher. Given a project name, topic, argument description, and REAL web search results:
 
 1. Write a "link story": a concise 2-4 sentence narrative that chains the argument from root cause to terminal impact.
 
-2. Generate 8 article suggestions grounded in the provided search results. Prefer sources that appear in the search results — use their exact titles and URLs. You may add 1-2 additional suggestions from your training knowledge only if the search results leave key links in the argument unsupported; leave their URL field empty.
+2. Generate up to 10 article suggestions grounded in the provided search results. Prefer sources that appear in the search results — use their exact titles and URLs. You may add 1-2 additional suggestions from your training knowledge only if the search results leave key links in the argument unsupported; leave their URL field empty.
 
 Use null (not empty string or placeholder text) for any cite field you are not confident about. Do not invent author names or qualifications.
 
@@ -212,15 +231,21 @@ Return valid JSON only (no markdown fences):
       "title": "exact title from search results or training knowledge, or null if uncertain",
       "publisher": "journal, website, or publishing institution, or null if uncertain",
       "url": "exact URL from search results, or empty string if not from search",
-      "initials": "FL, or null if uncertain",
-      "excerpt": "2-3 sentence passage that forms the body of the card"
+      "initials": "FL, or null if uncertain"
     }
   ]
 }"""
 
 
-async def _generate_search_queries(topic: str, description: str) -> list[str]:
+async def _generate_search_queries(
+    topic: str,
+    description: str,
+    exclude: list[str] | None = None,
+) -> list[str]:
     user_msg = f"TOPIC: {topic}\nARGUMENT: {description}"
+    if exclude:
+        used = "\n".join(f"- {q}" for q in exclude)
+        user_msg += f"\n\nDo NOT repeat these already-used queries:\n{used}"
     try:
         text, _, _ = await router.call(_QUERY_SYSTEM, user_msg, max_tokens=200)
         arr_match = re.search(r"\[[\s\S]*\]", text)
@@ -230,6 +255,46 @@ async def _generate_search_queries(topic: str, description: str) -> list[str]:
     except Exception:
         pass
     return [topic] if topic else []
+
+
+async def triage_search_results(
+    results: list[dict],
+    topic: str,
+    description: str,
+) -> list[dict]:
+    """AI-screen search results for relevance and credibility.
+
+    Batches at 30. On any failure the full input batch is returned unchanged.
+    """
+    if not results:
+        return results
+
+    kept: list[dict] = []
+    batch_size = 30
+
+    for batch_start in range(0, len(results), batch_size):
+        batch = results[batch_start : batch_start + batch_size]
+        numbered = "\n".join(
+            f"{i}. [{r.get('title', '')}]({r.get('url', '')})\n   {r.get('snippet', '')[:150]}"
+            for i, r in enumerate(batch)
+        )
+        user_msg = (
+            f"TOPIC: {topic}\n"
+            f"ARGUMENT: {description}\n\n"
+            f"SEARCH RESULTS:\n{numbered}"
+        )
+        try:
+            text, _, _ = await router.call(_TRIAGE_SYSTEM, user_msg, max_tokens=200)
+            obj_match = re.search(r"\{[\s\S]*\}", text)
+            if obj_match:
+                indices = json.loads(obj_match.group(0)).get("keep", [])
+                kept.extend(batch[i] for i in indices if 0 <= i < len(batch))
+            else:
+                kept.extend(batch)
+        except Exception:
+            kept.extend(batch)
+
+    return kept
 
 
 async def research_project(
@@ -262,7 +327,7 @@ async def research_project(
         system = _RESEARCH_SYSTEM
 
     try:
-        text, model_id, tokens = await router.call(system, user_msg, max_tokens=4096)
+        text, model_id, tokens = await router.call(system, user_msg, max_tokens=16384)
         json_match = re.search(r"\{[\s\S]*\}", text)
         if json_match:
             return json.loads(json_match.group(0)), model_id, tokens

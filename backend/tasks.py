@@ -10,7 +10,7 @@ from docx_utils import strip_cutting, extract_text_from_xml, apply_cuttings, bui
 from ai import (
     parse_cards, underline_card, highlight_card, get_prompts,
     research_project, cut_card_with_context, _generate_search_queries,
-    fetch_article_text,
+    triage_search_results, fetch_article_text,
 )
 from search import web_search, search_enabled
 from metrics import record_tokens
@@ -182,23 +182,49 @@ async def run_research_job(project_id: str) -> None:
 
         add_log("Starting research job…")
 
-        # Gather real search results if Brave API key is configured
-        search_results = []
+        # Iteratively search and triage until we have enough high-quality results
+        MIN_GOOD_RESULTS = 10
+        MAX_ROUNDS = 5
+
+        triaged_results: list[dict] = []
+        seen_urls: set[str] = set()
+        all_queries: list[str] = []
+
         if search_enabled():
-            add_log("Generating search queries…")
-            queries = await _generate_search_queries(
-                project.topic or "", project.description or ""
-            )
-            add_log(f"Generated {len(queries)} queries: {', '.join(queries)}")
-            for q in queries:
-                add_log(f"Searching: {q}")
-                hits = await web_search(q, count=5)
-                search_results.extend(hits)
-                add_log(f"  → {len(hits)} results")
+            for round_num in range(1, MAX_ROUNDS + 1):
+                add_log(f"Search round {round_num}/{MAX_ROUNDS} — need {MIN_GOOD_RESULTS - len(triaged_results)} more good results…")
+                queries = await _generate_search_queries(
+                    project.topic or "", project.description or "", exclude=all_queries
+                )
+                all_queries.extend(queries)
+                add_log(f"  Queries: {', '.join(queries)}")
+
+                raw_hits: list[dict] = []
+                for q in queries:
+                    hits = await web_search(q, count=50)
+                    new_hits = [h for h in hits if h.get("url") not in seen_urls]
+                    seen_urls.update(h.get("url", "") for h in new_hits)
+                    raw_hits.extend(new_hits)
+                    add_log(f"    '{q[:60]}' → {len(hits)} results, {len(new_hits)} new")
+
+                if raw_hits:
+                    add_log(f"  Triaging {len(raw_hits)} new results…")
+                    kept = await triage_search_results(
+                        raw_hits, project.topic or "", project.description or ""
+                    )
+                    add_log(f"  Triage kept {len(kept)}/{len(raw_hits)} results")
+                    triaged_results.extend(kept)
+
+                if len(triaged_results) >= MIN_GOOD_RESULTS:
+                    add_log(f"  Reached {len(triaged_results)} good results — stopping search")
+                    break
+            else:
+                add_log(f"Reached max search rounds with {len(triaged_results)} triaged results")
         else:
             add_log("Web search not configured — using AI knowledge only")
 
-        add_log(f"Researching with AI ({len(search_results)} search results)…")
+        search_results = triaged_results
+        add_log(f"Researching with AI ({len(search_results)} triaged search results)…")
         result, model_id, tokens = await research_project(
             project.name or "",
             project.topic or "",
@@ -254,10 +280,10 @@ async def run_research_job(project_id: str) -> None:
                     add_log(f"  → fetched {len(article_text)} chars")
                 else:
                     card.missing_full_text = True
-                    add_log(f"  → could not retrieve full text")
+                    add_log(f"  → could not retrieve full text — use 'Populate article text' to paste manually")
                 db.commit()
             else:
-                add_log(f"  No URL for: {(art.get('title') or art.get('tag') or '')[:60]}")
+                add_log(f"  No URL for: {(art.get('title') or art.get('tag') or '')[:60]} — use 'Populate article text' to paste manually")
 
         project.research_status = "done"
         add_log(f"Research complete — {len(articles)} cards created")
