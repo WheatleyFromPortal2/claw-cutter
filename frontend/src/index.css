@@ -353,6 +353,13 @@ body {
   border-color: var(--accent);
 }
 
+.mode-description {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-top: 2px;
+}
+
 /* ── Advanced section ── */
 .advanced-toggle {
   background: none;
@@ -768,6 +775,12 @@ body {
 .skipped-label {
   color: var(--text-muted);
   font-style: italic;
+}
+
+.card-log-researched {
+  color: var(--accent);
+  margin-left: 4px;
+  font-size: 10px;
 }
 
 /* ── Loading ── */

@@ -162,6 +162,7 @@ export default function JobStatus({ jobId, onBack }) {
                 ) : (
                   <span className="card-log-result">
                     ✓ {entry.ul_count} UL · {entry.hl_count} HL
+                    {entry.researched && <span className="card-log-researched" title="Full article text fetched"> ⬇</span>}
                   </span>
                 )}
               </div>

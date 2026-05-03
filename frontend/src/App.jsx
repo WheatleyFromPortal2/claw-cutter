@@ -352,6 +352,13 @@ export default function App() {
                 >
                   Topic Only
                 </button>
+                <button
+                  className={`toggle-btn ${cutMode === "research" ? "active" : ""}`}
+                  onClick={() => setCutMode("research")}
+                  title="Fetches full article text from URLs in citations before cutting"
+                >
+                  Research
+                </button>
               </div>
             </div>
 
@@ -365,6 +372,15 @@ export default function App() {
                   onChange={(e) => setTopic(e.target.value)}
                   rows={3}
                 />
+              </div>
+            )}
+
+            {cutMode === "research" && (
+              <div className="settings-row col">
+                <label className="settings-label">Research Mode</label>
+                <p className="mode-description">
+                  Fetches the full article text for each card by following URLs found in citations. Provides richer context for more accurate underlines and highlights.
+                </p>
               </div>
             )}
 

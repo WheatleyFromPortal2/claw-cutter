@@ -10,7 +10,7 @@ from docx_utils import strip_cutting, extract_text_from_xml, apply_cuttings, bui
 from ai import (
     parse_cards, underline_card, highlight_card, get_prompts,
     research_project, cut_card_with_context, _generate_search_queries,
-    fetch_article_text,
+    fetch_article_text, extract_url_from_text,
 )
 from search import web_search, search_enabled
 from metrics import record_tokens
@@ -69,7 +69,22 @@ async def run_cutting_job(job_id: str) -> None:
         total_output_tokens = 0
 
         for card in cards:
-            underline_result, ul_model, ul_tokens = await underline_card(card, topic, underline_prompt)
+            # Research mode: try to fetch full article text from any URL in the cite
+            full_article_text: str | None = None
+            if mode == "research":
+                url = extract_url_from_text(card.get("cite", "") + " " + card.get("body", ""))
+                if url:
+                    print(f"[job {job_id[:8]}] [research] fetching {url[:80]}", flush=True)
+                    fetched_text, has_full = await fetch_article_text(url)
+                    if has_full and fetched_text:
+                        full_article_text = fetched_text
+                        print(f"[job {job_id[:8]}] [research] fetched {len(fetched_text)} chars", flush=True)
+                    else:
+                        print(f"[job {job_id[:8]}] [research] could not fetch full text", flush=True)
+
+            underline_result, ul_model, ul_tokens = await underline_card(
+                card, topic, underline_prompt, full_article_text=full_article_text
+            )
             ul_in = ul_tokens.get("input", 0)
             ul_out = ul_tokens.get("output", 0)
             total_input_tokens += ul_in
@@ -79,8 +94,8 @@ async def run_cutting_job(job_id: str) -> None:
             relevant = underline_result.get("relevant", False)
             underlined = underline_result.get("underlined", [])
 
-            # "all" mode cuts every card regardless of relevance flag; "topic_only" respects it
-            should_cut = mode == "all" or (bool(underlined) and relevant)
+            # "all"/"research" cuts every card; "topic_only" filters by relevance
+            should_cut = mode in ("all", "research") or (bool(underlined) and relevant)
 
             if should_cut:
                 if underlined:
@@ -108,6 +123,7 @@ async def run_cutting_job(job_id: str) -> None:
                         "hl_count": len(highlighted),
                         "skipped": False,
                         "model": ul_model,
+                        "researched": bool(full_article_text),
                     }
                 )
             else:
@@ -126,6 +142,7 @@ async def run_cutting_job(job_id: str) -> None:
                         "hl_count": 0,
                         "skipped": True,
                         "model": ul_model,
+                        "researched": bool(full_article_text),
                     }
                 )
 

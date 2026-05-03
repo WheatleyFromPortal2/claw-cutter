@@ -85,13 +85,27 @@ def parse_cards(text: str) -> list:
 _EMPTY_TOKENS = {"input": 0, "output": 0}
 
 
-async def underline_card(card: dict, topic: str, prompt: str) -> tuple[dict, str, dict]:
+def extract_url_from_text(text: str) -> str | None:
+    """Find the first http/https URL in a string, or None."""
+    match = re.search(r'https?://[^\s<>"\']+', text)
+    return match.group(0) if match else None
+
+
+async def underline_card(
+    card: dict,
+    topic: str,
+    prompt: str,
+    full_article_text: str | None = None,
+) -> tuple[dict, str, dict]:
     """Returns (result_dict, model_id_used, tokens_dict)."""
+    body_section = f"BODY:\n{card['body'][:3000]}"
+    if full_article_text:
+        body_section += f"\n\nFULL ARTICLE TEXT (for context):\n{full_article_text[:8000]}"
     user_msg = (
         f"TOPIC: {topic}\n\n"
         f"CARD TAG: {card['tag']}\n"
         f"CITATION: {card['cite']}\n"
-        f"BODY:\n{card['body'][:3000]}"
+        f"{body_section}"
     )
     try:
         text, model_id, tokens = await router.call(prompt, user_msg, max_tokens=2048)
