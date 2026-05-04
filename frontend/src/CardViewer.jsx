@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
-import { getCard, updateCard, populateCiteFromVerbatim, approveCard, trashCard, restoreCard } from "./api.js";
+import { getCard, updateCard, populateCiteFromVerbatim, approveCard, trashCard, restoreCard, starCard, recutCard } from "./api.js";
+
+function normalizeCardText(text) {
+  return text.trim().replace(/\n{3,}/g, "\n\n");
+}
 
 function CardTextRenderer({ text, underlined = [], highlighted = [] }) {
   if (!text) return null;
@@ -48,7 +52,7 @@ function CardTextRenderer({ text, underlined = [], highlighted = [] }) {
 
 const FIELDS = [
   { key: "tag", label: "Tag", multiline: true },
-  { key: "author", label: "Author" },
+  { key: "author", label: "Author(s)" },
   { key: "author_qualifications", label: "Qualifications", multiline: true },
   { key: "date", label: "Date" },
   { key: "title", label: "Title", multiline: true },
@@ -59,7 +63,7 @@ const FIELDS = [
 ];
 
 // Fields where null means "unknown" (not just empty)
-const CITE_FIELDS = new Set(["author", "author_qualifications", "date", "title", "publisher", "initials"]);
+const CITE_FIELDS = new Set(["author", "date", "title", "publisher", "initials"]);
 
 function FieldValue({ fieldKey, value }) {
   if (fieldKey === "url" && value) {
@@ -89,6 +93,7 @@ export default function CardViewer({ cardId, onBack }) {
   const [saving, setSaving] = useState(false);
   const [populatingCite, setPopulatingCite] = useState(false);
   const [populatingText, setPopulatingText] = useState(false);
+  const [recutting, setRecutting] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -118,7 +123,7 @@ export default function CardViewer({ cardId, onBack }) {
         url: form.url,
         initials: form.initials,
         topic: form.topic,
-        card_text: form.card_text,
+        card_text: form.card_text ? normalizeCardText(form.card_text) : form.card_text,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const updated = await res.json();
@@ -157,7 +162,7 @@ export default function CardViewer({ cardId, onBack }) {
     if (!populateText.trim()) return;
     setPopulatingText(true);
     try {
-      const res = await updateCard(cardId, { card_text: populateText });
+      const res = await updateCard(cardId, { card_text: normalizeCardText(populateText) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const updated = await res.json();
       setCard(updated);
@@ -172,6 +177,10 @@ export default function CardViewer({ cardId, onBack }) {
   };
 
   const handleStatusAction = async (action) => {
+    if (action === "approve" && !card.card_text) {
+      setError('Cannot approve: article text is missing. Use "Populate article text" below to paste it in first.');
+      return;
+    }
     try {
       let res;
       if (action === "approve") res = await approveCard(cardId);
@@ -180,6 +189,37 @@ export default function CardViewer({ cardId, onBack }) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setCard((c) => ({ ...c, card_status: data.card_status }));
+      if (action === "approve" || action === "trash") onBack();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const handleRecut = async () => {
+    setRecutting(true);
+    setError(null);
+    try {
+      const res = await recutCard(cardId);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      const updated = await res.json();
+      setCard(updated);
+      setForm(updated);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setRecutting(false);
+    }
+  };
+
+  const handleStar = async () => {
+    try {
+      const res = await starCard(cardId);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setCard((c) => ({ ...c, is_starred: data.is_starred }));
     } catch (e) {
       setError(e.message);
     }
@@ -206,11 +246,23 @@ export default function CardViewer({ cardId, onBack }) {
       <div className="cv-header">
         <button className="btn-back" onClick={onBack}>← Back</button>
         <div className="cv-header-actions">
+          <button
+            className={`btn-star ${card.is_starred ? "starred" : ""}`}
+            onClick={handleStar}
+            title={card.is_starred ? "Unstar" : "Star"}
+          >
+            {card.is_starred ? "★" : "☆"}
+          </button>
           <span className={`status-badge status-${card.card_status}`}>{card.card_status}</span>
           {card.card_status === "researched" && (
             <button className="res-btn approve" onClick={() => handleStatusAction("approve")}>Approve</button>
           )}
-          {(card.card_status === "researched" || card.card_status === "approved") && (
+          {card.card_status === "cut" && (
+            <button className="res-btn" onClick={handleRecut} disabled={recutting}>
+              {recutting ? "Cutting…" : "Re-cut"}
+            </button>
+          )}
+          {(card.card_status === "researched" || card.card_status === "approved" || card.card_status === "cut") && (
             <button className="res-btn trash" onClick={() => handleStatusAction("trash")}>Trash</button>
           )}
           {card.card_status === "trashed" && (
@@ -234,17 +286,22 @@ export default function CardViewer({ cardId, onBack }) {
       {error && <div className="error-box">{error}</div>}
 
       {/* Missing full text warning */}
-      {card.missing_full_text && (
+      {!card.card_text && (
         <div className="missing-text-banner">
           <span className="missing-text-dot" />
-          Full article text could not be fetched automatically. Use "Populate Article Text" below to paste it in.
+          Article text is missing. Use "Populate article text" below to paste it in before approving.
         </div>
       )}
 
       {/* Populate cite from Cite Creator */}
       <div className="cv-cite-section">
-        <button className="advanced-toggle" onClick={() => setShowCiteInput((v) => !v)}>
+        <button
+          className="advanced-toggle"
+          style={hasUnknownCiteFields ? { color: "var(--warning)", fontWeight: 700, fontSize: 14 } : {}}
+          onClick={() => setShowCiteInput((v) => !v)}
+        >
           {showCiteInput ? "▲" : "▼"} Populate cite from Cite Creator
+          {hasUnknownCiteFields && " ⚠"}
         </button>
         {showCiteInput && (
           <div className="cv-cite-input">
@@ -269,8 +326,13 @@ export default function CardViewer({ cardId, onBack }) {
 
       {/* Populate article text */}
       <div className="cv-populate-section">
-        <button className="advanced-toggle" onClick={() => setShowPopulateText((v) => !v)}>
+        <button
+          className="advanced-toggle"
+          style={!card.card_text ? { color: "var(--warning)", fontWeight: 700, fontSize: 14 } : {}}
+          onClick={() => setShowPopulateText((v) => !v)}
+        >
           {showPopulateText ? "▲" : "▼"} Populate article text
+          {!card.card_text && " ⚠"}
         </button>
         {showPopulateText && (
           <div className="cv-populate-input">

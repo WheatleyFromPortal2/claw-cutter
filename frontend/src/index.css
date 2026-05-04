@@ -1273,6 +1273,39 @@ body {
   background: rgba(239, 68, 68, 0.1);
 }
 
+/* Star buttons */
+.btn-star {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 4px;
+  color: var(--text-muted);
+  transition: color 0.12s;
+}
+
+.btn-star:hover,
+.btn-star.starred {
+  color: #f5c518;
+}
+
+.btn-star-sm {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 1px 3px;
+  color: var(--text-muted);
+  transition: color 0.12s;
+}
+
+.btn-star-sm:hover,
+.btn-star-sm.starred {
+  color: #f5c518;
+}
+
 /* Selection bar */
 .selection-bar {
   position: sticky;

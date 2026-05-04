@@ -111,6 +111,7 @@ export default function App() {
   const [mode, setMode] = useState("cut"); // "cut" | "research"
   const [activeProjectId, setActiveProjectId] = useState(null);
   const [activeCardId, setActiveCardId] = useState(null);
+  const [pdRefreshKey, setPdRefreshKey] = useState(0);
 
   const [models, setModels] = useState([]);
   const [role, setRole] = useState(null);
@@ -213,26 +214,22 @@ export default function App() {
 
   // Research mode views
   if (mode === "research") {
-    if (activeCardId) {
-      return (
-        <div className="app">
-          <Header mode={mode} onModeChange={(m) => { setMode(m); setActiveProjectId(null); setActiveCardId(null); }} onTokenReset={() => { localStorage.removeItem("token"); setToken(""); }} />
-          <main className="main">
-            <CardViewer cardId={activeCardId} onBack={() => setActiveCardId(null)} />
-          </main>
-        </div>
-      );
-    }
     if (activeProjectId) {
       return (
         <div className="app">
           <Header mode={mode} onModeChange={(m) => { setMode(m); setActiveProjectId(null); setActiveCardId(null); }} onTokenReset={() => { localStorage.removeItem("token"); setToken(""); }} />
           <main className="main">
-            <ProjectDetail
-              projectId={activeProjectId}
-              onBack={() => setActiveProjectId(null)}
-              onSelectCard={(id) => setActiveCardId(id)}
-            />
+            <div style={{ display: activeCardId ? "none" : "block" }}>
+              <ProjectDetail
+                projectId={activeProjectId}
+                onBack={() => setActiveProjectId(null)}
+                onSelectCard={(id) => setActiveCardId(id)}
+                refreshKey={pdRefreshKey}
+              />
+            </div>
+            {activeCardId && (
+              <CardViewer cardId={activeCardId} onBack={() => { setActiveCardId(null); setPdRefreshKey((k) => k + 1); }} />
+            )}
           </main>
         </div>
       );

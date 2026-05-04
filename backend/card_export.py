@@ -79,9 +79,6 @@ def _card_xml(card: dict, hl_color: str) -> str:
     url = card.get("url") or ""
 
     cite_parts = []
-    if initials and date:
-        yr = date[:4] if len(date) >= 4 else date
-        cite_parts.append(f"{initials} {yr[2:]}.")
     if author:
         cite_parts.append(author + ("," if qual else ""))
     if qual:
@@ -96,6 +93,8 @@ def _card_xml(card: dict, hl_color: str) -> str:
         cite_parts.append(url)
 
     cite_text = " ".join(cite_parts)
+    if initials:
+        cite_text = (cite_text + " " if cite_text else "") + f"// {initials}"
     if cite_text:
         parts.append(
             f'<w:p><w:pPr><w:spacing w:after="0"/></w:pPr>'

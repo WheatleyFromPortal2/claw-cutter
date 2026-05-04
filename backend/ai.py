@@ -139,7 +139,7 @@ Return valid JSON only (no markdown fences):
       "tag": "one- or two-sentence debate tag stating what the card proves",
       "author": "Last, First, or null if uncertain",
       "author_qualifications": "professional role and institution, or null if uncertain",
-      "date": "YYYY, or null if uncertain",
+      "date": "mm/dd/yyyy, or null if uncertain",
       "title": "full article or paper title, or null if uncertain",
       "publisher": "journal, website, or publishing institution, or null if uncertain",
       "url": "",
@@ -156,7 +156,7 @@ Return valid JSON only (no markdown fences):
 {
   "author": "Last, First  (if multiple authors use 'Last et al.'), or null if not found",
   "author_qualifications": "professional role, title, and institution, or null if not found",
-  "date": "YYYY  or  YYYY/MM  or  YYYY/MM/DD, or null if not found",
+  "date": "mm/dd/yyyy, or null if not found",
   "title": "article or paper title, or null if not found",
   "publisher": "journal, website, or publication name, or null if not found",
   "url": "URL if present in the text, else empty string",
@@ -177,7 +177,7 @@ Return valid JSON only (no markdown fences):
 {
   "author": "Last, First  (e.g. 'Smith, John'), or null if not found",
   "author_qualifications": "professional role, title, and institution, or null if not found",
-  "date": "YYYY  or  YYYY/MM  or  YYYY/MM/DD, or null if not found",
+  "date": "mm/dd/yyyy, or null if not found",
   "title": "article or paper title (without quotes), or null if not found",
   "publisher": "journal, website, or publication name, or null if not found",
   "url": "URL if present, else empty string",
@@ -191,20 +191,22 @@ _QUERY_SYSTEM = (
     '["query one", "query two", "query three", "query four"]'
 )
 
-_TRIAGE_SYSTEM = """You are screening web search results for a competitive policy debate research project.
+_TRIAGE_SYSTEM = """You are a strict screener for competitive policy debate research. You are screening web search results and you should REJECT aggressively — only the best sources belong in a debate round.
 
-Given a topic, argument description, and a numbered list of search results, decide which results are worth keeping as potential card sources.
+KEEP a result ONLY if ALL of the following are true:
+- The URL points to a specific article, report, paper, or substantive piece (not a homepage, category page, or index)
+- The title and snippet clearly and directly address the argument — tangentially related is not good enough
+- The source is credible: peer-reviewed journal, government or intergovernmental agency, established think tank, or authoritative news outlet with named experts
+- The content appears recent and empirically grounded (not pure opinion or listicle)
 
-KEEP a result if:
-- The URL points to a specific article, report, paper, or substantive piece (not a homepage, search page, or index)
-- The title and snippet suggest the content is directly relevant to the argument
-- The source appears credible: academic journal, government agency, think tank, reputable news outlet, or expert publication
+REJECT without hesitation if ANY of the following:
+- Domain root, tag page, search page, or aggregator
+- Social media, forum, Reddit, Wikipedia, or wiki-style sites
+- Off-topic, only loosely related, or merely mentions the topic in passing
+- Snippet is empty, promotional, or purely navigational
+- Source is a blog, personal site, or non-expert publication
 
-REJECT a result if:
-- The URL is a domain root, category/tag page, or search results page
-- The content is clearly off-topic or only tangentially related to the argument
-- The source is a social media platform, forum, wiki, or clearly non-authoritative site
-- The snippet is empty, garbled, or purely navigational text
+When in doubt, REJECT. It is better to search for more results than to include a weak source.
 
 Return ONLY a JSON object with no explanation:
 {"keep": [0, 2, 5]}
@@ -227,7 +229,7 @@ Return valid JSON only (no markdown fences):
       "tag": "one- or two-sentence debate tag stating what the card proves",
       "author": "Last, First, or null if uncertain",
       "author_qualifications": "professional role and institution, or null if uncertain",
-      "date": "YYYY, or null if uncertain",
+      "date": "mm/dd/yyyy, or null if uncertain",
       "title": "exact title from search results or training knowledge, or null if uncertain",
       "publisher": "journal, website, or publishing institution, or null if uncertain",
       "url": "exact URL from search results, or empty string if not from search",
@@ -431,17 +433,24 @@ _REFINE_SYSTEM = """You are a quality reviewer for competitive policy debate car
 
 You will receive the original card, the cutting criteria, and the underlines and highlights produced by a previous pass.
 
-Your job: decide whether the current cuts faithfully follow the criteria. Only flag "not satisfied" when you can make a concrete, meaningful improvement — do not make trivial or cosmetic changes.
+Your job is to return satisfied: true if the cuts are already good, or return improved cuts if there are real problems worth fixing. Do not change cuts that are already working well.
+
+Problems worth fixing:
+- Underlines that are clearly too long — capturing filler, transitions, or methodology noise instead of just the core claim/evidence
+- Underlines that skip a clearly stronger sentence or statistic in the card
+- Highlights that are too long (should be the single most impactful 3-10 words) or that aren't inside an underlined phrase
+- Highlighted phrases that are not a strict substring of an underlined phrase
+
+Return satisfied: true if the cuts are tight, accurate, and follow the criteria — even if they aren't perfect.
 
 Rules for any revised output:
-- Every phrase in "underlined" and "highlighted" MUST be an exact verbatim substring of the card body text — no paraphrasing, no ellipses, no reordering
+- Every phrase MUST be an exact verbatim substring of the card body text — no paraphrasing, no ellipses
 - Highlighted phrases must be exact substrings of an underlined phrase
-- If the current cuts are already good, return satisfied: true
 
 Return valid JSON only (no markdown fences):
 {"satisfied": true}
 
-OR, if you can meaningfully improve the cuts:
+OR with genuinely improved cuts:
 {
   "satisfied": false,
   "underlined": ["exact verbatim phrase from card body", ...],

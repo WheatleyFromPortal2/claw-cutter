@@ -7,6 +7,7 @@ import {
   approveCard,
   trashCard,
   restoreCard,
+  starCard,
   exportCards,
   updateProject,
   approveAllCards,
@@ -21,7 +22,7 @@ const TAB_LABELS = {
   trashed: "Trash",
 };
 
-function CardRow({ card, tab, onApprove, onTrash, onRestore, onSelect, onView, selected, showSelect }) {
+function CardRow({ card, tab, onApprove, onTrash, onRestore, onStar, onSelect, onView, selected, showSelect }) {
   const statusColor = {
     researched: "var(--text-muted)",
     approved: "var(--warning)",
@@ -29,22 +30,21 @@ function CardRow({ card, tab, onApprove, onTrash, onRestore, onSelect, onView, s
     trashed: "#f87171",
   };
 
+  const CITE_WARN_FIELDS = ["author", "date", "title"];
+  const hasWarning = !card.card_text ||
+    CITE_WARN_FIELDS.some((f) => card[f] === null || card[f] === undefined);
+
   // In researched tab: show article title as primary, tag as secondary
   const primaryTitle = tab === "researched"
     ? (card.title || card.tag || "Untitled")
     : (card.tag || card.title || "Untitled");
 
-  const handleRowClick = () => {
-    if (showSelect) {
-      // For approved/cut tabs: click row to view, checkbox to select
-      onView(card.id);
-    } else {
-      onView(card.id);
-    }
-  };
+  const cutDate = tab === "cut" && card.updated_at
+    ? new Date(card.updated_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+    : null;
 
   return (
-    <div className={`res-card-row ${selected ? "selected" : ""}`} onClick={handleRowClick}>
+    <div className={`res-card-row ${selected ? "selected" : ""}`} onClick={() => onView(card.id)}>
       {showSelect && (
         <input
           type="checkbox"
@@ -55,19 +55,26 @@ function CardRow({ card, tab, onApprove, onTrash, onRestore, onSelect, onView, s
         />
       )}
       <div className="res-card-body">
-        <div className="res-card-tag">
+        <div className="res-card-tag" style={hasWarning ? { color: "var(--warning)" } : {}}>
+          {hasWarning && <span title="Missing cite fields or article text">⚠ </span>}
           {primaryTitle}
-          {card.missing_full_text && (
-            <span className="res-card-missing" title="Full article text not available"> ⚠</span>
-          )}
+          {card.is_starred && <span style={{ marginLeft: 5, color: "#eab308" }}>★</span>}
         </div>
         <div className="res-card-cite">
-          {[card.initials, card.date ? card.date.slice(0, 4) : null, card.author, card.publisher]
+          {[card.date ? card.date.slice(0, 4) : null, card.author, card.publisher]
             .filter(Boolean)
             .join(" · ")}
+          {cutDate && <span style={{ marginLeft: 8, color: "var(--text-muted)", fontSize: 11 }}>Cut {cutDate}</span>}
         </div>
       </div>
       <div className="res-card-actions" onClick={(e) => e.stopPropagation()}>
+        <button
+          className={`btn-star-sm ${card.is_starred ? "starred" : ""}`}
+          onClick={() => onStar(card.id)}
+          title={card.is_starred ? "Unstar" : "Star"}
+        >
+          {card.is_starred ? "★" : "☆"}
+        </button>
         <span className="res-status-dot" style={{ background: statusColor[card.card_status] }} title={card.card_status} />
         {card.card_status === "researched" && (
           <>
@@ -75,7 +82,7 @@ function CardRow({ card, tab, onApprove, onTrash, onRestore, onSelect, onView, s
             <button className="res-btn trash" onClick={() => onTrash(card.id)} title="Trash">✕</button>
           </>
         )}
-        {card.card_status === "approved" && (
+        {(card.card_status === "approved" || card.card_status === "cut") && (
           <button className="res-btn trash" onClick={() => onTrash(card.id)} title="Trash">✕</button>
         )}
         {card.card_status === "trashed" && (
@@ -116,7 +123,7 @@ function ActivityLog({ entries, running, title }) {
   );
 }
 
-export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
+export default function ProjectDetail({ projectId, onBack, onSelectCard, refreshKey = 0 }) {
   const [project, setProject] = useState(null);
   const [cards, setCards] = useState([]);
   const [tab, setTab] = useState("researched");
@@ -130,6 +137,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
   const [addUrlVisible, setAddUrlVisible] = useState(false);
   const [addUrlValue, setAddUrlValue] = useState("");
   const [addingUrl, setAddingUrl] = useState(false);
+  const [minArticles, setMinArticles] = useState(10);
   const pollRef = useRef(null);
 
   const loadProject = useCallback(async () => {
@@ -155,7 +163,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
   useEffect(() => {
     loadProject();
     loadCards();
-  }, [loadProject, loadCards]);
+  }, [loadProject, loadCards, refreshKey]);
 
   // Poll while research or cut is running
   useEffect(() => {
@@ -200,7 +208,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
   };
 
   const handleResearch = async () => {
-    const res = await startResearch(projectId);
+    const res = await startResearch(projectId, minArticles);
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
       alert("Research failed: " + (err.detail || res.status));
@@ -234,6 +242,14 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
   const handleRestore = async (id) => {
     await restoreCard(id);
     setCards((prev) => prev.filter((c) => c.id !== id));
+  };
+
+  const handleStar = async (id) => {
+    const res = await starCard(id);
+    if (res.ok) {
+      const data = await res.json();
+      setCards((prev) => prev.map((c) => c.id === id ? { ...c, is_starred: data.is_starred } : c));
+    }
   };
 
   const handleApproveAll = async () => {
@@ -286,7 +302,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
     if (!ids.length) return;
     setExporting(true);
     try {
-      await exportCards(ids);
+      await exportCards(ids, "cyan", project.name);
     } catch (e) {
       alert("Export failed: " + e.message);
     } finally {
@@ -324,14 +340,28 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
           <button className="btn-secondary" style={{ fontSize: 13 }} onClick={handleStartEdit}>
             Edit
           </button>
-          <button
-            className="btn-primary"
-            style={{ padding: "6px 14px", fontSize: 13 }}
-            onClick={handleResearch}
-            disabled={isResearching}
-          >
-            {isResearching ? "Researching…" : "Research"}
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <select
+              value={minArticles}
+              onChange={(e) => setMinArticles(parseInt(e.target.value))}
+              style={{ padding: "4px 6px", fontSize: 12, background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 4 }}
+              disabled={isResearching}
+              title="Number of articles to research"
+            >
+              <option value={10}>10 articles</option>
+              <option value={20}>20 articles</option>
+              <option value={50}>50 articles</option>
+              <option value={100}>100 articles</option>
+            </select>
+            <button
+              className="btn-primary"
+              style={{ padding: "6px 14px", fontSize: 13 }}
+              onClick={handleResearch}
+              disabled={isResearching}
+            >
+              {isResearching ? "Researching…" : "Research"}
+            </button>
+          </div>
           <button
             className="btn-cut"
             onClick={handleCut}
@@ -497,6 +527,7 @@ export default function ProjectDetail({ projectId, onBack, onSelectCard }) {
               onApprove={handleApprove}
               onTrash={handleTrash}
               onRestore={handleRestore}
+              onStar={handleStar}
               onSelect={toggleSelect}
               onView={(id) => onSelectCard(id)}
               selected={selected.has(card.id)}

@@ -1,7 +1,6 @@
 import json
 import os
 import shutil
-import subprocess
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -30,12 +29,17 @@ from pydantic import BaseModel
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ai import get_prompts, generate_cite, fetch_article_text, parse_verbatim_cite
+from ai import (
+    get_prompts, generate_cite, fetch_article_text, parse_verbatim_cite,
+    cut_card_with_context, review_and_refine_cutting,
+)
 from card_export import export_cards_to_docx
 from database import Base, Job, Project, Card, SessionLocal, engine, get_db
-from metrics import get_current_user_count, get_tokens_per_sec, get_uptime_secs, record_user
+from metrics import get_current_user_count, get_tokens_per_sec, get_uptime_secs, record_user, record_tokens
+from search import get_search_stats
 from model_router import router as model_router
 from tasks import run_cutting_job, run_research_job, run_project_cut_job
+from utils import get_git_commit, normalize_date
 
 DATA_DIR = os.getenv("DATA_DIR", "./data")
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -64,6 +68,7 @@ def _migrate_db() -> None:
         "ALTER TABLE projects ADD COLUMN research_log TEXT",
         "ALTER TABLE projects ADD COLUMN cut_log TEXT",
         "ALTER TABLE cards ADD COLUMN missing_full_text INTEGER DEFAULT 0",
+        "ALTER TABLE cards ADD COLUMN is_starred INTEGER DEFAULT 0",
     ]
     with engine.connect() as conn:
         for stmt in stmts:
@@ -490,6 +495,7 @@ def delete_project(
 def start_research(
     project_id: str,
     background_tasks: BackgroundTasks,
+    min_articles: int = 10,
     db: Session = Depends(get_db),
     _: None = Depends(verify_token),
 ):
@@ -499,12 +505,13 @@ def start_research(
     if project.research_status == "running":
         raise HTTPException(status_code=409, detail="Research already running")
 
+    clamped = min(max(1, min_articles), 100)
     project.research_status = "running"
     project.research_error = None
     db.commit()
 
-    background_tasks.add_task(run_research_job, project_id)
-    return {"status": "started"}
+    background_tasks.add_task(run_research_job, project_id, clamped)
+    return {"status": "started", "min_articles": clamped}
 
 
 @app.post("/api/projects/{project_id}/cut")
@@ -550,6 +557,7 @@ def _card_out(c: Card) -> dict:
         "highlighted": json.loads(c.highlighted) if c.highlighted else [],
         "card_status": c.card_status or "researched",
         "missing_full_text": bool(c.missing_full_text),
+        "is_starred": bool(c.is_starred),
         "created_at": c.created_at.isoformat() if c.created_at else None,
         "updated_at": c.updated_at.isoformat() if c.updated_at else None,
     }
@@ -578,7 +586,11 @@ def list_project_cards(
                 Card.date.ilike(like),
             )
         )
-    return [_card_out(c) for c in query.order_by(Card.created_at.asc()).all()]
+    if card_status == "cut":
+        order = Card.updated_at.desc()
+    else:
+        order = Card.created_at.asc()
+    return [_card_out(c) for c in query.order_by(order).all()]
 
 
 @app.get("/api/cards")
@@ -635,6 +647,7 @@ class CardUpdate(BaseModel):
     card_text: Optional[str] = None
     underlined: Optional[list] = None
     highlighted: Optional[list] = None
+    is_starred: Optional[bool] = None
 
 
 @app.patch("/api/cards/{card_id}")
@@ -652,6 +665,8 @@ def update_card(
     for key, val in fields.items():
         if key in ("tags", "underlined", "highlighted"):
             setattr(card, key, json.dumps(val))
+        elif key == "date":
+            setattr(card, key, normalize_date(val))
         else:
             setattr(card, key, val)
 
@@ -703,6 +718,84 @@ def restore_card(
     card.updated_at = datetime.utcnow()
     db.commit()
     return {"id": card.id, "card_status": card.card_status}
+
+
+@app.post("/api/cards/{card_id}/star")
+def star_card(
+    card_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    card = db.query(Card).filter(Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    card.is_starred = not bool(card.is_starred)
+    card.updated_at = datetime.utcnow()
+    db.commit()
+    return {"id": card.id, "is_starred": card.is_starred}
+
+
+_RECUT_MAX_REFINE = 3
+
+
+@app.post("/api/cards/{card_id}/recut")
+async def recut_card(
+    card_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(verify_token),
+):
+    card = db.query(Card).filter(Card.id == card_id).first()
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    if not card.card_text:
+        raise HTTPException(status_code=400, detail="Card has no article text to cut")
+
+    project = db.query(Project).filter(Project.id == card.project_id).first()
+    prompts = get_prompts()
+    card_dict = {
+        "tag": card.tag or "",
+        "author": card.author or "",
+        "date": card.date or "",
+        "title": card.title or "",
+        "card_text": card.card_text or "",
+    }
+
+    ul_result, hl_result, model_id, ul_tokens, hl_tokens = await cut_card_with_context(
+        card_dict,
+        project.name if project else "",
+        project.link_story if project else "",
+        card.topic or "",
+        prompts["underline"],
+        prompts["highlight"],
+    )
+    record_tokens(model_id, ul_tokens.get("input", 0) + ul_tokens.get("output", 0))
+    record_tokens(model_id, hl_tokens.get("input", 0) + hl_tokens.get("output", 0))
+
+    underlined = ul_result.get("underlined", [])
+    highlighted = hl_result.get("highlighted", [])
+
+    if underlined:
+        for _ in range(_RECUT_MAX_REFINE):
+            refine_result, ref_model, ref_tokens = await review_and_refine_cutting(
+                card_dict, card.topic or "", underlined, highlighted,
+                prompts["underline"], prompts["highlight"],
+            )
+            record_tokens(ref_model, ref_tokens.get("input", 0) + ref_tokens.get("output", 0))
+            if refine_result.get("satisfied", True):
+                break
+            new_ul = refine_result.get("underlined", underlined)
+            new_hl = refine_result.get("highlighted", highlighted)
+            if sorted(new_ul) == sorted(underlined) and sorted(new_hl) == sorted(highlighted):
+                break
+            underlined = new_ul
+            highlighted = new_hl
+
+    card.underlined = json.dumps(underlined)
+    card.highlighted = json.dumps(highlighted)
+    card.card_status = "cut"
+    card.updated_at = datetime.utcnow()
+    db.commit()
+    return _card_out(card)
 
 
 @app.post("/api/projects/{project_id}/cards/approve-all")
@@ -767,15 +860,15 @@ async def add_card_from_url(
         tag=cite_fields.get("title") or "",
         author=cite_fields.get("author"),
         author_qualifications=cite_fields.get("author_qualifications"),
-        date=cite_fields.get("date"),
+        date=normalize_date(cite_fields.get("date")),
         title=cite_fields.get("title"),
         publisher=cite_fields.get("publisher"),
         url=url,
-        initials=cite_fields.get("initials"),
+        initials=f"AI traced by lionclaw {get_git_commit()}",
         topic=project.topic or "",
         tags=json.dumps([f"proj::{project.name}"]),
-        card_text=article_text if has_full_text else "",
-        missing_full_text=not has_full_text,
+        card_text="",
+        missing_full_text=True,
         card_status="researched",
         created_at=datetime.utcnow(),
     )
@@ -809,6 +902,8 @@ async def populate_cite_from_verbatim(
 
     for field in ("author", "author_qualifications", "date", "title", "publisher", "url", "initials"):
         val = cite.get(field)
+        if field == "date":
+            val = normalize_date(val)
         setattr(card, field, val)
 
     card.updated_at = datetime.utcnow()
@@ -834,6 +929,8 @@ async def generate_card_cite(
     for field in ("author", "author_qualifications", "date", "title", "publisher", "url", "initials"):
         val = cite.get(field)
         if val:
+            if field == "date":
+                val = normalize_date(val)
             setattr(card, field, val)
 
     card.updated_at = datetime.utcnow()
@@ -844,6 +941,7 @@ async def generate_card_cite(
 class ExportRequest(BaseModel):
     card_ids: list[str]
     hl_color: Optional[str] = "cyan"
+    project_name: Optional[str] = None
 
 
 @app.post("/api/cards/export")
@@ -884,28 +982,20 @@ def export_cards(
     docx_bytes = export_cards_to_docx(card_dicts, body.hl_color or "cyan")
 
     import io
+    import re as _re
     from fastapi.responses import StreamingResponse
+    raw_name = body.project_name or ""
+    safe_name = _re.sub(r"[^\w\s\-]", "", raw_name).strip().replace(" ", "_")
+    filename = f"{safe_name}_cards.docx" if safe_name else "lionclaw_export.docx"
     return StreamingResponse(
         io.BytesIO(docx_bytes),
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": "attachment; filename=lionclaw_export.docx"},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
 # ── Status page & helpers ─────────────────────────────────────────────────────
 
-def _git_commit() -> str:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-            cwd=Path(__file__).parent.parent,
-        )
-        return result.stdout.strip()[:12] if result.returncode == 0 else "unknown"
-    except Exception:
-        return "unknown"
 
 
 def _data_dir_size_bytes() -> int:
@@ -931,19 +1021,22 @@ def _db_size_bytes() -> int:
 
 @app.get("/api/status")
 def api_status(db: Session = Depends(get_db)):
-    running_jobs = db.query(Job).filter(Job.status == "running").count()
-    queued_jobs = db.query(Job).filter(Job.status == "queued").count()
+    docx_running = db.query(Job).filter(Job.status == "running").count()
+    docx_queued = db.query(Job).filter(Job.status == "queued").count()
+    research_running = db.query(Project).filter(Project.research_status == "running").count()
+    cut_running = db.query(Project).filter(Project.cut_status == "running").count()
 
     return {
-        "git_commit": _git_commit(),
+        "git_commit": get_git_commit(),
         "uptime_secs": get_uptime_secs(),
         "current_users": get_current_user_count(),
         "cpu_percent": psutil.cpu_percent(interval=0.1),
         "tokens_per_sec": get_tokens_per_sec(),
         "db_size_bytes": _db_size_bytes(),
         "data_dir_size_bytes": _data_dir_size_bytes(),
-        "running_jobs": running_jobs,
-        "queued_jobs": queued_jobs,
+        "running_jobs": docx_running + research_running + cut_running,
+        "queued_jobs": docx_queued,
+        "search": get_search_stats(),
     }
 
 
@@ -971,24 +1064,112 @@ def _fmt_bytes(n: int) -> str:
     return f"{n:.1f} TB"
 
 
+def _bar_color(pct: float) -> str:
+    if pct >= 95:
+        return "#ef4444"
+    if pct >= 80:
+        return "#f97316"
+    if pct >= 50:
+        return "#eab308"
+    return "#22c55e"
+
+
+def _search_section_html(s: dict) -> str:
+    if not s["enabled"]:
+        return "<p style='color:#6b7280;font-size:13px'>LangSearch API key not configured.</p>"
+
+    lim = s["limits"]
+    usg = s["usage"]
+    tier_label = {"free": "Free Tier", "tier1": "Tier 1", "tier2": "Tier 2", "tier3": "Tier 3"}.get(
+        s["tier"], s["tier"]
+    )
+
+    def row(label: str, used: int, limit: int) -> str:
+        pct = min(100.0, used / max(limit, 1) * 100)
+        color = _bar_color(pct)
+        bar = (
+            f'<div style="background:#2e3248;border-radius:3px;height:6px;width:120px;display:inline-block;vertical-align:middle">'
+            f'<div style="background:{color};border-radius:3px;height:6px;width:{pct:.0f}%"></div>'
+            f'</div>'
+        )
+        warn = " ⚠" if pct >= 80 else ""
+        return (
+            f"<tr><td>{label}</td>"
+            f"<td style='font-family:monospace'>{used} / {limit}</td>"
+            f"<td style='font-size:11px;color:#6b7280'>{pct:.0f}%{warn}</td>"
+            f"<td>{bar}</td></tr>\n"
+        )
+
+    rows = (
+        row("Queries / second (QPS)", usg["qps"], lim["qps"])
+        + row("Queries / minute (QPM)", usg["qpm"], lim["qpm"])
+        + row("Queries / day (QPD)", usg["qpd"], lim["qpd"])
+    )
+
+    banner = ""
+    if s["blocked"]:
+        exp = s["blocked_expires_in_secs"]
+        exp_str = f"{exp:.0f}s" if exp and exp < 120 else (f"{exp/60:.1f}m" if exp else "unknown")
+        banner = (
+            f'<div style="background:#7f1d1d;border:1px solid #ef4444;border-radius:6px;'
+            f'padding:10px 14px;margin-bottom:12px;font-size:13px;color:#fca5a5">'
+            f'&#9888; LangSearch rate limited — {s["blocked_reason"]}. '
+            f'Estimated expiry: <strong>{exp_str}</strong></div>'
+        )
+
+    last_evt = s.get("last_rate_limit_event")
+    last_evt_html = ""
+    if last_evt and not s["blocked"]:
+        last_evt_html = (
+            f'<p style="font-size:11px;color:#6b7280;margin-top:8px">'
+            f'Last rate-limit hit: {last_evt["reason"]} (waited {last_evt["waited_secs"]:.0f}s)</p>'
+        )
+
+    return (
+        f'<p style="font-size:12px;color:#6b7280;margin-bottom:10px">Tier: <strong style="color:#e2e4ef">{tier_label}</strong></p>'
+        + banner
+        + f'<table><thead><tr><th>Window</th><th>Usage</th><th>%</th><th>Bar</th></tr></thead>'
+        + f'<tbody>{rows}</tbody></table>'
+        + last_evt_html
+    )
+
+
 @app.get("/status", response_class=HTMLResponse)
 def status_page(db: Session = Depends(get_db)):
-    running_jobs = db.query(Job).filter(Job.status == "running").count()
+    docx_running = db.query(Job).filter(Job.status == "running").count()
     queued_jobs = db.query(Job).filter(Job.status == "queued").count()
+    research_running = db.query(Project).filter(Project.research_status == "running").count()
+    cut_running = db.query(Project).filter(Project.cut_status == "running").count()
+    running_jobs = docx_running + research_running + cut_running
 
-    git_commit = _git_commit()
+    git_commit = get_git_commit()
     uptime = _fmt_uptime(get_uptime_secs())
     current_users = get_current_user_count()
     cpu = psutil.cpu_percent(interval=0.1)
     tps = get_tokens_per_sec()
     db_size = _fmt_bytes(_db_size_bytes())
     data_size = _fmt_bytes(_data_dir_size_bytes())
+    search_stats = get_search_stats()
 
     tps_rows = ""
     for model_id, rate in tps.items():
         tps_rows += f"<tr><td>{model_id}</td><td>{rate:.1f} tok/s</td></tr>\n"
     if not tps_rows:
         tps_rows = "<tr><td colspan='2' style='color:#6b7280'>No recent activity</td></tr>"
+
+    search_html = _search_section_html(search_stats)
+
+    # Rate limit warning banner at top of page if currently blocked
+    top_banner = ""
+    if search_stats["blocked"]:
+        exp = search_stats["blocked_expires_in_secs"]
+        exp_str = f"{exp:.0f}s" if exp and exp < 120 else (f"{exp/60:.1f}m" if exp else "unknown")
+        top_banner = (
+            f'<div style="background:#7f1d1d;border:1px solid #ef4444;border-radius:6px;'
+            f'padding:12px 16px;margin-bottom:20px;color:#fca5a5;font-size:14px">'
+            f'&#9888; <strong>LangSearch rate limited</strong> — {search_stats["blocked_reason"]}. '
+            f'Expires in <strong>{exp_str}</strong>.</div>'
+        )
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1000,6 +1181,7 @@ def status_page(db: Session = Depends(get_db)):
   <style>
     body {{ font-family: system-ui, sans-serif; background: #0f1117; color: #e2e4ef; margin: 0; padding: 32px; }}
     h1 {{ font-size: 20px; font-weight: 700; margin-bottom: 24px; }}
+    h2 {{ font-size: 14px; font-weight: 600; margin: 24px 0 12px; }}
     .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }}
     .card {{ background: #1a1d27; border: 1px solid #2e3248; border-radius: 8px; padding: 16px; }}
     .label {{ font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }}
@@ -1014,6 +1196,7 @@ def status_page(db: Session = Depends(get_db)):
 </head>
 <body>
   <h1>✦ LionClaw — Status</h1>
+  {top_banner}
   <div class="grid">
     <div class="card"><div class="label">Git Commit</div><div class="value" style="font-size:14px">{git_commit}</div></div>
     <div class="card"><div class="label">App Uptime</div><div class="value">{uptime}</div></div>
@@ -1025,13 +1208,16 @@ def status_page(db: Session = Depends(get_db)):
     <div class="card"><div class="label">Used Space (/data)</div><div class="value">{data_size}</div></div>
   </div>
 
-  <h2 style="font-size:14px;font-weight:600;margin-bottom:12px">Tokens/s (last 60s, per model)</h2>
+  <h2>Tokens/s (last 60s, per model)</h2>
   <table>
     <thead><tr><th>Model</th><th>Rate</th></tr></thead>
     <tbody>{tps_rows}</tbody>
   </table>
 
-  <p class="note">Auto-refreshes every 5 seconds · <a href="/">← Back to app</a> · JSON: <a href="/api/status">/api/status</a></p>
+  <h2>LangSearch API</h2>
+  {search_html}
+
+  <p class="note">Auto-refreshes every 5 seconds · <a href="#" onclick="history.back();return false;">← Back</a> · JSON: <a href="/api/status">/api/status</a></p>
 </body>
 </html>"""
     return HTMLResponse(content=html)

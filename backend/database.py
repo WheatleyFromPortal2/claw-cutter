@@ -81,6 +81,7 @@ class Card(Base):
     highlighted = Column(Text, nullable=True)  # JSON array of highlighted phrases
 
     missing_full_text = Column(Boolean, default=False, nullable=True)  # True if full article not fetched
+    is_starred = Column(Boolean, default=False, nullable=True)
 
     # Workflow status: researched | approved | cut | trashed
     card_status = Column(String, default="researched")

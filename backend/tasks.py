@@ -10,15 +10,16 @@ from docx_utils import strip_cutting, extract_text_from_xml, apply_cuttings, bui
 from ai import (
     parse_cards, underline_card, highlight_card, get_prompts,
     research_project, cut_card_with_context, review_and_refine_cutting,
-    _generate_search_queries, triage_search_results, fetch_article_text,
+    _generate_search_queries, triage_search_results,
 )
-from search import web_search, search_enabled
+from utils import get_git_commit, normalize_date
+from search import web_search, search_enabled, get_search_stats
 from metrics import record_tokens
 
 DATA_DIR = os.getenv("DATA_DIR", "./data")
 logger = logging.getLogger(__name__)
 
-MAX_REFINE_ROUNDS = 2  # refinement passes after the initial cut
+MAX_REFINE_ROUNDS = 3  # refinement passes after the initial cut
 
 
 async def run_cutting_job(job_id: str) -> None:
@@ -105,8 +106,12 @@ async def run_cutting_job(job_id: str) -> None:
                         record_tokens(ref_model, ref_in + ref_out)
                         if refine_result.get("satisfied", True):
                             break
-                        underlined = refine_result.get("underlined", underlined)
-                        highlighted = refine_result.get("highlighted", highlighted)
+                        new_ul = refine_result.get("underlined", underlined)
+                        new_hl = refine_result.get("highlighted", highlighted)
+                        if sorted(new_ul) == sorted(underlined) and sorted(new_hl) == sorted(highlighted):
+                            break
+                        underlined = new_ul
+                        highlighted = new_hl
                 else:
                     highlighted = []
                 cuttings.append(
@@ -179,7 +184,7 @@ async def run_cutting_job(job_id: str) -> None:
         db.close()
 
 
-async def run_research_job(project_id: str) -> None:
+async def run_research_job(project_id: str, min_articles: int = 10) -> None:
     print(f"[research {project_id[:8]}] started", flush=True)
     db = SessionLocal()
     try:
@@ -199,7 +204,7 @@ async def run_research_job(project_id: str) -> None:
         add_log("Starting research job…")
 
         # Iteratively search and triage until we have enough high-quality results
-        MIN_GOOD_RESULTS = 10
+        MIN_GOOD_RESULTS = min(max(1, min_articles), 100)
         MAX_ROUNDS = 5
 
         triaged_results: list[dict] = []
@@ -208,31 +213,51 @@ async def run_research_job(project_id: str) -> None:
 
         if search_enabled():
             for round_num in range(1, MAX_ROUNDS + 1):
-                add_log(f"Search round {round_num}/{MAX_ROUNDS} — need {MIN_GOOD_RESULTS - len(triaged_results)} more good results…")
+                need = MIN_GOOD_RESULTS - len(triaged_results)
+                add_log(f"Search round {round_num}/{MAX_ROUNDS} — need {need} more good results…")
                 queries = await _generate_search_queries(
                     project.topic or "", project.description or "", exclude=all_queries
                 )
                 all_queries.extend(queries)
-                add_log(f"  Queries: {', '.join(queries)}")
+                add_log(f"  Queries: {', '.join(q[:60] for q in queries)}")
 
-                raw_hits: list[dict] = []
+                round_done = False
                 for q in queries:
+                    add_log(f"  Searching: {q[:80]}")
                     hits = await web_search(q, count=50)
+
+                    # Warn if the search was rate-limited (limiter already waited)
+                    rl = get_search_stats()
+                    if rl.get("last_rate_limit_event"):
+                        evt = rl["last_rate_limit_event"]
+                        add_log(f"  ⚠ Rate limit hit: {evt['reason']} (waited {evt['waited_secs']:.0f}s)")
+
                     new_hits = [h for h in hits if h.get("url") not in seen_urls]
                     seen_urls.update(h.get("url", "") for h in new_hits)
-                    raw_hits.extend(new_hits)
-                    add_log(f"    '{q[:60]}' → {len(hits)} results, {len(new_hits)} new")
+                    add_log(f"    → {len(hits)} results, {len(new_hits)} new after dedup")
 
-                if raw_hits:
-                    add_log(f"  Triaging {len(raw_hits)} new results…")
-                    kept = await triage_search_results(
-                        raw_hits, project.topic or "", project.description or ""
-                    )
-                    add_log(f"  Triage kept {len(kept)}/{len(raw_hits)} results")
-                    triaged_results.extend(kept)
+                    if new_hits:
+                        add_log(f"    Triaging {len(new_hits)} results…")
+                        kept = await triage_search_results(
+                            new_hits, project.topic or "", project.description or ""
+                        )
+                        triaged_results.extend(kept)
+                        add_log(
+                            f"    Kept {len(kept)}/{len(new_hits)} — "
+                            f"total {len(triaged_results)} good results so far"
+                        )
 
-                if len(triaged_results) >= MIN_GOOD_RESULTS:
-                    add_log(f"  Reached {len(triaged_results)} good results — stopping search")
+                        if len(triaged_results) >= MIN_GOOD_RESULTS:
+                            add_log(
+                                f"  Target reached ({len(triaged_results)} ≥ {MIN_GOOD_RESULTS})"
+                                f" — stopping early"
+                            )
+                            round_done = True
+                            break
+                    else:
+                        add_log(f"    No new results to triage")
+
+                if round_done or len(triaged_results) >= MIN_GOOD_RESULTS:
                     break
             else:
                 add_log(f"Reached max search rounds with {len(triaged_results)} triaged results")
@@ -264,6 +289,7 @@ async def run_research_job(project_id: str) -> None:
         project_tag = f"proj::{project.name}"
 
         import uuid
+        auto_initials = f"AI traced by lionclaw ({get_git_commit()})"
         for art in articles:
             url = art.get("url") or ""
             card = Card(
@@ -272,11 +298,11 @@ async def run_research_job(project_id: str) -> None:
                 tag=art.get("tag") or "",
                 author=art.get("author"),
                 author_qualifications=art.get("author_qualifications"),
-                date=art.get("date"),
+                date=normalize_date(art.get("date")),
                 title=art.get("title"),
                 publisher=art.get("publisher"),
                 url=url,
-                initials=art.get("initials"),
+                initials=auto_initials,
                 topic=project.topic or "",
                 tags=json.dumps([project_tag]),
                 card_text="",
@@ -286,20 +312,7 @@ async def run_research_job(project_id: str) -> None:
             )
             db.add(card)
             db.commit()
-
-            if url:
-                add_log(f"Fetching article text: {url[:80]}")
-                article_text, has_full_text = await fetch_article_text(url)
-                if has_full_text and article_text:
-                    card.card_text = article_text
-                    card.missing_full_text = False
-                    add_log(f"  → fetched {len(article_text)} chars")
-                else:
-                    card.missing_full_text = True
-                    add_log(f"  → could not retrieve full text — use 'Populate article text' to paste manually")
-                db.commit()
-            else:
-                add_log(f"  No URL for: {(art.get('title') or art.get('tag') or '')[:60]} — use 'Populate article text' to paste manually")
+            add_log(f"  Created card: {(art.get('title') or art.get('tag') or '')[:60]}")
 
         project.research_status = "done"
         add_log(f"Research complete — {len(articles)} cards created")
@@ -384,8 +397,13 @@ async def run_project_cut_job(project_id: str) -> None:
                     if refine_result.get("satisfied", True):
                         add_log(f"  ✓ Refinement round {refine_round}: satisfied")
                         break
-                    underlined = refine_result.get("underlined", underlined)
-                    highlighted = refine_result.get("highlighted", highlighted)
+                    new_ul = refine_result.get("underlined", underlined)
+                    new_hl = refine_result.get("highlighted", highlighted)
+                    if sorted(new_ul) == sorted(underlined) and sorted(new_hl) == sorted(highlighted):
+                        add_log(f"  ✓ Refinement round {refine_round}: converged (no change)")
+                        break
+                    underlined = new_ul
+                    highlighted = new_hl
                     add_log(f"  ↻ Refinement round {refine_round}: revised to {len(underlined)} underlines, {len(highlighted)} highlights")
 
             card.underlined = json.dumps(underlined)

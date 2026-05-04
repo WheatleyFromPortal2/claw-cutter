@@ -65,3 +65,36 @@ The real debate docx used for parse and integration tests lives at:
 ```
 tests/test-files/Emory-Gazmararian-Forman-Neg-Coast 1-Doubles.docx
 ```
+
+## LangSearch API
+
+### Configuration
+
+Set these in `backend/.env`:
+
+```
+LANGSEARCH_API_KEY=your_key_here
+LANGSEARCH_TIER=free   # or tier1, tier2, tier3
+```
+
+Tier limits:
+
+| Tier  | QPS | QPM  | QPD     |
+|-------|-----|------|---------|
+| free  | 1   | 60   | 1,000   |
+| tier1 | 5   | 200  | 2,000   |
+| tier2 | 10  | 500  | 10,000  |
+| tier3 | 30  | 2000 | 100,000 |
+
+Rate limit status is visible at `/status` and in `/api/status` under the `search` key.
+
+### Querying the LangSearch documentation
+
+If you need information not in this file, query the docs dynamically:
+
+```
+GET https://docs.langsearch.com/limits/api-limits.md?ask=<question>
+```
+
+The `ask` parameter accepts a specific, self-contained natural-language question.
+The response contains a direct answer plus relevant excerpts and sources.

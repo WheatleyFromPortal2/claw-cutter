@@ -70,8 +70,8 @@ export const updateProject = (id, data) =>
 export const deleteProject = (id) =>
   fetch(`${BASE}/projects/${id}`, { method: "DELETE", headers: headers() });
 
-export const startResearch = (id) =>
-  fetch(`${BASE}/projects/${id}/research`, { method: "POST", headers: headers() });
+export const startResearch = (id, minArticles = 10) =>
+  fetch(`${BASE}/projects/${id}/research?min_articles=${minArticles}`, { method: "POST", headers: headers() });
 
 export const startProjectCut = (id) =>
   fetch(`${BASE}/projects/${id}/cut`, { method: "POST", headers: headers() });
@@ -119,6 +119,12 @@ export const trashCard = (id) =>
 export const restoreCard = (id) =>
   fetch(`${BASE}/cards/${id}/restore`, { method: "POST", headers: headers() });
 
+export const starCard = (id) =>
+  fetch(`${BASE}/cards/${id}/star`, { method: "POST", headers: headers() });
+
+export const recutCard = (id) =>
+  fetch(`${BASE}/cards/${id}/recut`, { method: "POST", headers: headers() });
+
 export const generateCite = (id, articleText) =>
   fetch(`${BASE}/cards/${id}/cite`, {
     method: "POST",
@@ -133,18 +139,22 @@ export const populateCiteFromVerbatim = (id, citeText) =>
     body: JSON.stringify({ cite_text: citeText }),
   });
 
-export const exportCards = async (cardIds, hlColor = "cyan") => {
+export const exportCards = async (cardIds, hlColor = "cyan", projectName = null) => {
   const res = await fetch(`${BASE}/cards/export`, {
     method: "POST",
     headers: jsonHeaders(),
-    body: JSON.stringify({ card_ids: cardIds, hl_color: hlColor }),
+    body: JSON.stringify({ card_ids: cardIds, hl_color: hlColor, project_name: projectName }),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
+  // Try to use the filename from Content-Disposition, fall back to project name
+  const disp = res.headers.get("Content-Disposition") || "";
+  const match = disp.match(/filename="?([^"]+)"?/);
+  const filename = match ? match[1] : (projectName ? `${projectName}_cards.docx` : "lionclaw_export.docx");
   const a = document.createElement("a");
   a.href = url;
-  a.download = "lionclaw_export.docx";
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
